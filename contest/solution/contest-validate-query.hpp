@@ -109,10 +109,8 @@ class ContestValidateQuery : public td::actor::Actor {
   bool want_split_{false};
   bool want_merge_{false};
   bool is_key_block_{false};
-  bool update_shard_cc_{false};
   bool prev_key_block_exists_{false};
   bool debug_checks_{false};
-  bool outq_cleanup_partial_{false};
   BlockSeqno prev_key_seqno_{~0u};
   int stage_{0};
   td::BitArray<64> shard_pfx_;
@@ -179,7 +177,6 @@ class ContestValidateQuery : public td::actor::Actor {
   std::shared_ptr<block::MsgProcessedUptoCollection> sibling_processed_upto_;
 
   std::map<td::Bits256, int> block_create_count_;
-  unsigned block_create_total_{0};
 
   std::unique_ptr<vm::AugmentedDictionary> in_msg_dict_, out_msg_dict_, account_blocks_dict_;
   block::ValueFlow value_flow_;
@@ -212,9 +209,9 @@ class ContestValidateQuery : public td::actor::Actor {
 
   void finish_query();
   void abort_query(td::Status error);
-  bool reject_query(std::string error, td::BufferSlice reason = {});
-  bool reject_query(std::string err_msg, td::Status error, td::BufferSlice reason = {});
-  bool soft_reject_query(std::string error, td::BufferSlice reason = {});
+  bool reject_query(std::string error);
+  bool reject_query(std::string err_msg, td::Status error);
+  bool soft_reject_query(std::string error);
   void start_up() override;
 
   bool fatal_error(td::Status error);
@@ -281,8 +278,8 @@ class ContestValidateQuery : public td::actor::Actor {
   bool prepare_out_msg_queue_size();
   void got_out_queue_size(size_t i, td::Result<td::uint64> res);
 
-  bool fix_one_processed_upto(block::MsgProcessedUpto& proc, ton::ShardIdFull owner, bool allow_cur = false);
-  bool fix_processed_upto(block::MsgProcessedUptoCollection& upto, bool allow_cur = false);
+  bool fix_one_processed_upto(block::MsgProcessedUpto& proc, ton::ShardIdFull owner);
+  bool fix_processed_upto(block::MsgProcessedUptoCollection& upto);
   bool fix_all_processed_upto();
   bool add_trivial_neighbor_after_merge();
   bool add_trivial_neighbor();

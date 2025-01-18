@@ -181,7 +181,7 @@ struct TonlibError {
     return f("UNKNOWN");
   }
 
-  static td::Status LiteServer(td::int32 code, td::Slice code_description, td::Slice message) {
+  static td::Status LiteServer([[maybe_unused]] td::int32 code, td::Slice code_description, td::Slice message) {
     return td::Status::Error(500, PSLICE() << "LITE_SERVER_" << code_description << ": " << message);
   }
 };

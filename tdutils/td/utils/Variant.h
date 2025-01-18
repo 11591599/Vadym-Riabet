@@ -90,7 +90,7 @@ template <int offset>
 class ForEachTypeImpl<offset, Dummy> {
  public:
   template <class F>
-  static void visit(F &&f) {
+  static void visit(F &&) {
   }
 };
 

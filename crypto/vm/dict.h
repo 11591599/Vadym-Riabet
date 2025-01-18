@@ -75,8 +75,8 @@ struct AugmentationData {
   virtual bool check_leaf(vm::CellSlice& cs, vm::CellSlice& val_cs) const;
   virtual bool check_fork(vm::CellSlice& cs, vm::CellSlice& left_cs, vm::CellSlice& right_cs) const;
   virtual bool check_empty(vm::CellSlice& cs) const;
-  virtual bool check_leaf_key_extra(vm::CellSlice& val_cs, vm::CellSlice& extra_cs, td::ConstBitPtr key,
-                                    int key_len) const {
+  virtual bool check_leaf_key_extra(vm::CellSlice& val_cs, vm::CellSlice& extra_cs, [[maybe_unused]] td::ConstBitPtr key,
+                                    [[maybe_unused]] int key_len) const {
     return check_leaf(extra_cs, val_cs);
   }
   Ref<vm::CellSlice> extract_extra(vm::CellSlice& cs) const;
@@ -273,10 +273,10 @@ class DictionaryFixed : public DictionaryBase {
   }
   virtual Ref<Cell> finish_create_leaf(CellBuilder& cb, const CellSlice& value) const;
   virtual Ref<Cell> finish_create_fork(CellBuilder& cb, Ref<Cell> c1, Ref<Cell> c2, int n) const;
-  virtual bool check_fork(CellSlice& cs, Ref<Cell> c1, Ref<Cell> c2, int n) const {
+  virtual bool check_fork(CellSlice&, Ref<Cell>, Ref<Cell>, int) const {
     return true;
   }
-  virtual bool check_leaf(CellSlice& cs, td::ConstBitPtr key, int key_len) const {
+  virtual bool check_leaf(CellSlice&, [[maybe_unused]] td::ConstBitPtr key, [[maybe_unused]] int key_len) const {
     return true;
   }
   bool check_leaf(Ref<CellSlice> cs_ref, td::ConstBitPtr key, int key_len) const {
@@ -529,7 +529,7 @@ class Dictionary final : public DictionaryFixed {
   }
 
  private:
-  bool check_fork(CellSlice& cs, Ref<Cell> c1, Ref<Cell> c2, int n) const override {
+  bool check_fork(CellSlice& cs, Ref<Cell>, Ref<Cell>, int) const override {
     return cs.empty_ext();
   }
   static Ref<Cell> extract_value_ref(Ref<CellSlice> cs);

@@ -353,7 +353,7 @@ class BigIntG {
       throw IntOverflow();
     }
   }
-  void ignore(bool f) const {
+  void ignore(bool) const {
   }
   bool is_valid() const {
     return n > 0;

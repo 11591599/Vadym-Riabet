@@ -131,8 +131,8 @@ class AdnlAddressReverse : public AdnlAddressImpl {
     return create_tl_object<ton_api::adnl_address_reverse>();
   }
   td::actor::ActorOwn<AdnlNetworkConnection> create_connection(
-      td::actor::ActorId<AdnlNetworkManager> network_manager, td::actor::ActorId<Adnl> adnl,
-      std::unique_ptr<AdnlNetworkConnection::Callback> callback) const override {
+      td::actor::ActorId<AdnlNetworkManager>, td::actor::ActorId<Adnl>,
+      std::unique_ptr<AdnlNetworkConnection::Callback>) const override {
     LOG(ERROR) << "Cannot create connection for AdnlAddressReverse";
     return {};
   }

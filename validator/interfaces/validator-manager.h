@@ -123,7 +123,7 @@ using ValidateCandidateResult = td::Variant<UnixTime, CandidateReject>;
 
 class ValidatorManager : public ValidatorManagerInterface {
  public:
-  virtual void init_last_masterchain_state(td::Ref<MasterchainState> state) {
+  virtual void init_last_masterchain_state(td::Ref<MasterchainState>) {
   }
   virtual void set_block_state(BlockHandle handle, td::Ref<ShardState> state,
                                td::Promise<td::Ref<ShardState>> promise) = 0;
@@ -243,11 +243,11 @@ class ValidatorManager : public ValidatorManagerInterface {
 
   virtual void wait_shard_client_state(BlockSeqno seqno, td::Timestamp timeout, td::Promise<td::Unit> promise) = 0;
 
-  virtual void log_validator_session_stats(validatorsession::ValidatorSessionStats stats) {
+  virtual void log_validator_session_stats(validatorsession::ValidatorSessionStats) {
   }
-  virtual void log_new_validator_group_stats(validatorsession::NewValidatorGroupStats stats) {
+  virtual void log_new_validator_group_stats(validatorsession::NewValidatorGroupStats) {
   }
-  virtual void log_end_validator_group_stats(validatorsession::EndValidatorGroupStats stats) {
+  virtual void log_end_validator_group_stats(validatorsession::EndValidatorGroupStats) {
   }
 
   virtual void get_block_handle_for_litequery(BlockIdExt block_id, td::Promise<ConstBlockHandle> promise) = 0;
@@ -265,14 +265,14 @@ class ValidatorManager : public ValidatorManagerInterface {
       td::optional<ShardIdFull> shard,
       td::Promise<tl_object_ptr<lite_api::liteServer_nonfinal_validatorGroups>> promise) = 0;
 
-  virtual void add_lite_query_stats(int lite_query_id) {
+  virtual void add_lite_query_stats([[maybe_unused]] int lite_query_id) {
   }
 
-  virtual void log_collate_query_stats(CollationStats stats) {
+  virtual void log_collate_query_stats(CollationStats) {
   }
-  virtual void log_validate_query_stats(ValidationStats stats) {
+  virtual void log_validate_query_stats(ValidationStats) {
   }
-  virtual void log_collator_node_response_stats(CollatorNodeResponseStats stats) {
+  virtual void log_collator_node_response_stats(CollatorNodeResponseStats) {
   }
 
   virtual void add_persistent_state_description(td::Ref<PersistentStateDescription> desc) = 0;

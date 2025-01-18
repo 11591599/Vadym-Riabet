@@ -88,7 +88,7 @@ struct validator_set_descr {
   td::int32 workchain;
   td::uint32 cc_seqno;
   validator_set_descr() = default;
-  validator_set_descr(ton::ShardIdFull shard_id, ton::CatchainSeqno cc_seqno_, bool flag)
+  validator_set_descr(ton::ShardIdFull shard_id, ton::CatchainSeqno cc_seqno_, [[maybe_unused]] bool flag)
       : shard(td::bswap64(shard_id.shard))
       , workchain(td::bswap32(shard_id.workchain))
       , cc_seqno(td::bswap32(cc_seqno_)) {
@@ -176,7 +176,7 @@ struct McShardHash : public McShardHashI {
               ton::BlockSeqno reg_mc_seqno = std::numeric_limits<ton::BlockSeqno>::max(),
               ton::BlockSeqno min_ref_mc_seqno = std::numeric_limits<ton::BlockSeqno>::max(),
               ton::CatchainSeqno cc_seqno = std::numeric_limits<ton::CatchainSeqno>::max(), ton::ShardId val_shard = 0,
-              bool nx_cc_updated = false, bool before_split = false, bool before_merge = false, bool want_split = false,
+              [[maybe_unused]] bool nx_cc_updated = false, bool before_split = false, bool before_merge = false, bool want_split = false,
               bool want_merge = false)
       : blk_(id, root_hash, file_hash)
       , start_lt_(start_lt)

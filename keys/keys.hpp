@@ -230,10 +230,10 @@ class PublicKey {
     td::Result<std::unique_ptr<Encryptor>> create_encryptor() const {
       UNREACHABLE();
     }
-    bool operator==(const Empty &with) const {
+    bool operator==([[maybe_unused]] const Empty &with) const {
       return false;
     }
-    bool operator!=(const Empty &with) const {
+    bool operator!=([[maybe_unused]] const Empty &with) const {
       return true;
     }
   };

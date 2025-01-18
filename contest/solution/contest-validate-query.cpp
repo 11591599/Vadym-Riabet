@@ -70,11 +70,10 @@ void ContestValidateQuery::abort_query(td::Status error) {
  * Rejects the validation and logs an error message.
  *
  * @param error The error message to be logged.
- * @param reason The reason for rejecting the validation.
  *
  * @returns False indicating that the validation failed.
  */
-bool ContestValidateQuery::reject_query(std::string error, td::BufferSlice reason) {
+bool ContestValidateQuery::reject_query(std::string error) {
   error = error_ctx() + error;
   LOG(WARNING) << "REJECT: aborting validation of block candidate for " << shard_.to_str() << " : " << error;
   if (main_promise) {
@@ -89,24 +88,22 @@ bool ContestValidateQuery::reject_query(std::string error, td::BufferSlice reaso
  *
  * @param err_msg The error message to be displayed.
  * @param error The error status.
- * @param reason The reason for rejecting the query.
  *
  * @returns False indicating that the validation failed.
  */
-bool ContestValidateQuery::reject_query(std::string err_msg, td::Status error, td::BufferSlice reason) {
+bool ContestValidateQuery::reject_query(std::string err_msg, td::Status error) {
   error.ensure_error();
-  return reject_query(err_msg + " : " + error.to_string(), std::move(reason));
+  return reject_query(err_msg + " : " + error.to_string());
 }
 
 /**
  * Rejects the validation and logs an error message.
  *
  * @param error The error message to be logged.
- * @param reason The reason for rejecting the validation.
  *
  * @returns False indicating that the validation failed.
  */
-bool ContestValidateQuery::soft_reject_query(std::string error, td::BufferSlice reason) {
+bool ContestValidateQuery::soft_reject_query(std::string error) {
   error = error_ctx() + error;
   LOG(WARNING) << "SOFT REJECT: aborting validation of block candidate for " << shard_.to_str() << " : " << error;
   if (main_promise) {
@@ -1435,12 +1432,10 @@ void ContestValidateQuery::got_out_queue_size(size_t i, td::Result<td::uint64> r
  *
  * @param proc The MsgProcessedUpto object.
  * @param owner The shard that the MsgProcessesUpto information is taken from.
- * @param allow_cur Allow using the new state of the msaterchain.
  *
  * @returns True if the processed up to information was successfully adjusted, false otherwise.
  */
-bool ContestValidateQuery::fix_one_processed_upto(block::MsgProcessedUpto& proc, ton::ShardIdFull owner,
-                                                  bool allow_cur) {
+bool ContestValidateQuery::fix_one_processed_upto(block::MsgProcessedUpto& proc, ton::ShardIdFull owner) {
   if (proc.compute_shard_end_lt) {
     return true;
   }
@@ -1463,13 +1458,12 @@ bool ContestValidateQuery::fix_one_processed_upto(block::MsgProcessedUpto& proc,
  * Almost the same as in Collator.
  *
  * @param upto The MsgProcessedUptoCollection to be adjusted.
- * @param allow_cur Allow using the new state of the msaterchain.
  *
  * @returns True if all entries were successfully adjusted, False otherwise.
  */
-bool ContestValidateQuery::fix_processed_upto(block::MsgProcessedUptoCollection& upto, bool allow_cur) {
+bool ContestValidateQuery::fix_processed_upto(block::MsgProcessedUptoCollection& upto) {
   for (auto& entry : upto.list) {
-    if (!fix_one_processed_upto(entry, upto.owner, allow_cur)) {
+    if (!fix_one_processed_upto(entry, upto.owner)) {
       return false;
     }
   }
@@ -1489,7 +1483,7 @@ bool ContestValidateQuery::fix_all_processed_upto() {
   if (sibling_processed_upto_ && !fix_processed_upto(*sibling_processed_upto_)) {
     return fatal_error("Cannot adjust old ProcessedUpto of the shard state of our virtual sibling");
   }
-  if (!fix_processed_upto(*ns_.processed_upto_, true)) {
+  if (!fix_processed_upto(*ns_.processed_upto_)) {
     return fatal_error("Cannot adjust new ProcessedUpto of our shard state");
   }
   for (auto& descr : neighbors_) {
@@ -1980,7 +1974,8 @@ bool ContestValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton:
   acc_state_hash = hash_upd.new_hash;
   unsigned c = 0;
   vm::Dictionary out_msgs{trans.r1.out_msgs, 15};
-  if (!out_msgs.check_for_each([&c](Ref<vm::CellSlice> value, td::ConstBitPtr key, int key_len) {
+  //TODO: replace with ???????? (first value of lambda not used)
+  if (!out_msgs.check_for_each([&c](Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
         CHECK(key_len == 15);
         return key.get_uint(15) == c++;
       }) ||
@@ -2049,9 +2044,10 @@ bool ContestValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Re
                                     << max_trans.to_ulong() << " outside of the block's lt range " << start_lt_
                                     << " .. " << end_lt_);
     }
+  //TODO: replace with valdate_check
     if (!trans_dict.validate_check_extra(
             [this, acc_id, &old_state, &last_trans_lt_len, &acc_state_hash](
-                Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+                Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
               CHECK(key_len == 64);
               return precheck_one_transaction(acc_id, key.get_uint(64), std::move(value), old_state.last_trans_hash,
                                               old_state.last_trans_lt, last_trans_lt_len, acc_state_hash) ||
@@ -2079,8 +2075,9 @@ bool ContestValidateQuery::precheck_account_transactions() {
   LOG(INFO) << "pre-checking all AccountBlocks, and all transactions of all accounts";
   try {
     CHECK(account_blocks_dict_);
+  //TODO: replace with valdate_check
     if (!account_blocks_dict_->validate_check_extra(
-            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
               CHECK(key_len == 256);
               return precheck_one_account_block(key, std::move(value)) ||
                      reject_query("invalid AccountBlock for account "s + key.to_hex(256) + " in the new block "s +
@@ -2801,7 +2798,7 @@ bool ContestValidateQuery::unpack_dispatch_queue_update() {
       try {
         have_unprocessed_account_dispatch_queue_ = false;
         td::uint64 total_account_dispatch_queues = 0;
-        ps_.dispatch_queue_->check_for_each([&](Ref<vm::CellSlice>, td::ConstBitPtr, int n) -> bool {
+        ps_.dispatch_queue_->check_for_each([&](Ref<vm::CellSlice>, td::ConstBitPtr, int) -> bool {
           ++total_account_dispatch_queues;
           if (total_account_dispatch_queues > processed_account_dispatch_queues_) {
             return false;
@@ -3476,8 +3473,9 @@ bool ContestValidateQuery::check_in_msg_descr() {
   LOG(INFO) << "checking inbound messages listed in InMsgDescr";
   try {
     CHECK(in_msg_dict_);
+  //TODO: replace with valdate_check
     if (!in_msg_dict_->validate_check_extra(
-            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
               CHECK(key_len == 256);
               return check_in_msg(key, std::move(value)) ||
                      reject_query("invalid InMsg with key (message hash) "s + key.to_hex(256) + " in the new block "s +
@@ -4121,8 +4119,9 @@ bool ContestValidateQuery::check_out_msg_descr() {
   LOG(INFO) << "checking outbound messages listed in OutMsgDescr";
   try {
     CHECK(out_msg_dict_);
+  //TODO: replace with valdate_check
     if (!out_msg_dict_->validate_check_extra(
-            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+            [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
               CHECK(key_len == 256);
               return check_out_msg(key, std::move(value)) ||
                      reject_query("invalid OutMsg with key "s + key.to_hex(256) + " in the new block "s + id_.to_str());
@@ -5071,8 +5070,9 @@ bool ContestValidateQuery::check_transactions() {
   LOG(INFO) << "checking all transactions";
   ns_.account_dict_ =
       std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
+  //TODO: replace with check_for_each
   bool ok = account_blocks_dict_->check_for_each_extra(
-      [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+      [this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
         CHECK(key_len == 256);
         return check_account_transactions(key, std::move(value));
       });

@@ -50,14 +50,14 @@ class TlObject {
    * Appends object to the storer serializing object to a buffer of fixed length.
    * \param[in] s Storer to which object will be appended.
    */
-  virtual void store(td::TlStorerUnsafe &s) const {
+  virtual void store(td::TlStorerUnsafe &) const {
   }
 
   /**
    * Appends object to the storer calculating TL-length of the serialized object.
    * \param[in] s Storer to which object will be appended.
    */
-  virtual void store(td::TlStorerCalcLength &s) const {
+  virtual void store(td::TlStorerCalcLength &) const {
   }
 
   /**

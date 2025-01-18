@@ -119,11 +119,11 @@ constexpr std::false_type is_promise_interface(...) {
   return {};
 }
 template <class T>
-constexpr std::true_type is_promise_interface(const PromiseInterface<T> &promise) {
+constexpr std::true_type is_promise_interface(const PromiseInterface<T> &) {
   return {};
 }
 template <class T>
-constexpr std::true_type is_promise_interface(const Promise<T> &promise) {
+constexpr std::true_type is_promise_interface(const Promise<T> &) {
   return {};
 }
 
@@ -136,7 +136,7 @@ constexpr std::false_type is_promise_interface_ptr(...) {
   return {};
 }
 template <class T>
-constexpr std::true_type is_promise_interface_ptr(const unique_ptr<T> &promise) {
+constexpr std::true_type is_promise_interface_ptr(const unique_ptr<T> &) {
   return {};
 }
 
@@ -182,7 +182,7 @@ class LambdaPromise : public PromiseInterface<ValueT> {
     ok_(Result<ValueT>(std::move(status)));
   }
   template <class Y, class F = FunctionT>
-  std::enable_if_t<!is_callable<F, Result<ValueT>>::value, void> do_error(Y &&status) {
+  std::enable_if_t<!is_callable<F, Result<ValueT>>::value, void> do_error(Y &&) {
     ok_(Auto());
   }
   template <class F = FunctionT>
@@ -288,7 +288,7 @@ class Promise {
   }
 
   template <class F>
-  auto do_wrap(td::Status status, F &&func) {
+  auto do_wrap(td::Status status, F &&) {
     set_error(std::move(status));
   }
 

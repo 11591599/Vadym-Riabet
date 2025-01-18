@@ -54,14 +54,14 @@ class CntObject {
   struct WriteError {};
   CntObject() : cnt_(1) {
   }
-  CntObject(const CntObject& other) : CntObject() {
+  CntObject(const CntObject&) : CntObject() {
   }
-  CntObject(CntObject&& other) : CntObject() {
+  CntObject(CntObject&&) : CntObject() {
   }
-  CntObject& operator=(const CntObject& other) {
+  CntObject& operator=(const CntObject&) {
     return *this;
   }
-  CntObject& operator=(CntObject&& other) {
+  CntObject& operator=(CntObject&&) {
     return *this;
   }
   virtual ~CntObject() {
@@ -175,7 +175,7 @@ class Ref {
   //explicit Ref(bool init) : ptr(init ? new T : 0) {
   //}
   template <typename... Args>
-  explicit Ref(bool init, Args&&... args) : ptr(0) {
+  explicit Ref([[maybe_unused]]bool init, Args&&... args) : ptr(0) {
     //assert(init);
     ptr = new T(std::forward<Args>(args)...);
   }
@@ -216,7 +216,7 @@ class Ref {
   }
 
   template <class S>
-  Ref(const Ref<S>& r, std::enable_if_t<std::is_base_of<T, S>::value, int> t = 0) : ptr(static_cast<T*>(r.ptr)) {
+  Ref(const Ref<S>& r, std::enable_if_t<std::is_base_of<T, S>::value, int> = 0) : ptr(static_cast<T*>(r.ptr)) {
     static_assert(std::is_base_of<T, S>::value, "Invalid static Ref conversion");
     if (ptr) {
       acquire_shared(ptr);
@@ -225,7 +225,7 @@ class Ref {
 
   template <class S>
   explicit Ref(const Ref<S>& r,
-               std::enable_if_t<!std::is_base_of<T, S>::value && std::is_base_of<S, T>::value, int> t = 0)
+               std::enable_if_t<!std::is_base_of<T, S>::value && std::is_base_of<S, T>::value, int> = 0)
       : ptr(dynamic_cast<T*>(r.ptr)) {
     static_assert(std::is_base_of<S, T>::value, "Invalid dynamic Ref conversion");
     if (ptr) {
@@ -237,7 +237,7 @@ class Ref {
   }
 
   template <class S>
-  Ref(static_cast_ref, const Ref<S>& r, std::enable_if_t<std::is_base_of<S, T>::value, int> t = 0)
+  Ref(static_cast_ref, const Ref<S>& r, std::enable_if_t<std::is_base_of<S, T>::value, int> = 0)
       : ptr(static_cast<T*>(r.ptr)) {
     static_assert(std::is_base_of<S, T>::value, "Invalid static Ref downcast");
     if (r.ptr) {
@@ -248,13 +248,13 @@ class Ref {
   }
 
   template <class S>
-  Ref(Ref<S>&& r, std::enable_if_t<std::is_base_of<T, S>::value, int> t = 0) : ptr(static_cast<T*>(r.ptr)) {
+  Ref(Ref<S>&& r, std::enable_if_t<std::is_base_of<T, S>::value, int> = 0) : ptr(static_cast<T*>(r.ptr)) {
     static_assert(std::is_base_of<T, S>::value, "Invalid static Ref conversion");
     r.ptr = nullptr;
   }
 
   template <class S>
-  explicit Ref(Ref<S>&& r, std::enable_if_t<!std::is_base_of<T, S>::value && std::is_base_of<S, T>::value, int> t = 0)
+  explicit Ref(Ref<S>&& r, std::enable_if_t<!std::is_base_of<T, S>::value && std::is_base_of<S, T>::value, int> = 0)
       : ptr(dynamic_cast<T*>(r.ptr)) {
     static_assert(std::is_base_of<S, T>::value, "Invalid dynamic Ref conversion");
     if (!ptr && r.ptr) {
@@ -264,7 +264,7 @@ class Ref {
   }
 
   template <class S>
-  Ref(static_cast_ref, Ref<S>&& r, std::enable_if_t<std::is_base_of<S, T>::value, int> t = 0) noexcept
+  Ref(static_cast_ref, Ref<S>&& r, std::enable_if_t<std::is_base_of<S, T>::value, int> = 0) noexcept
       : ptr(static_cast<T*>(r.ptr)) {
     static_assert(std::is_base_of<S, T>::value, "Invalid static Ref downcast");
     if (r.ptr) {

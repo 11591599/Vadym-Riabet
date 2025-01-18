@@ -172,7 +172,7 @@ class MpmcSleepyWaiter {
     bool unpark_flag_{false};  // TODO: move out of lock
     int yield_cnt{0};
     int32 worker_id{0};
-    char padding[128];
+    [[maybe_unused]] char padding[128];
   };
 
   // There are a lot of workers

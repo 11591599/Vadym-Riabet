@@ -3379,6 +3379,7 @@ void generate_cpp_output_to(std::ostream& os, int options = 0, std::vector<std::
   if (options & 1) {
     os << "#pragma once\n";
   }
+  os << "#pragma GCC diagnostic push\n#pragma GCC diagnostic ignored \"-Wunused-parameter\"\n";
   for (auto s : include_files) {
     if (s.size() >= 10 && s.substr(s.size() - 10) == "tlblib.hpp") {
       os << "#include <" << s << ">\n";
@@ -3424,6 +3425,7 @@ void generate_cpp_output_to(std::ostream& os, int options = 0, std::vector<std::
   for (auto it = cpp_namespace_list.rbegin(); it != cpp_namespace_list.rend(); ++it) {
     os << "\n} // namespace " << *it << std::endl;
   }
+  os << "\n#pragma GCC diagnostic pop\n";
 }
 
 void generate_cpp_output_to(std::string filename, int options = 0, std::vector<std::string> include_files = {}) {

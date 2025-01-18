@@ -30,7 +30,7 @@ class ExtClient : public td::actor::Actor {
 
   virtual void send_query(std::string name, td::BufferSlice data, td::Timestamp timeout,
                           td::Promise<td::BufferSlice> promise) = 0;
-  virtual void send_query_to_server(std::string name, td::BufferSlice data, size_t server_idx, td::Timestamp timeout,
+  virtual void send_query_to_server([[maybe_unused]] std::string name, [[maybe_unused]] td::BufferSlice data, [[maybe_unused]] size_t server_idx, [[maybe_unused]] td::Timestamp timeout,
                                     td::Promise<td::BufferSlice> promise) {
     promise.set_error(td::Status::Error("not supported"));
   }

@@ -188,12 +188,12 @@ void tuple_for_each(const std::tuple<Args...> &tuple, const F &func) {
 }
 
 template <size_t N, class Arg, class... Args, std::enable_if_t<N == 0, int> = 0>
-auto &&get_nth_argument(Arg &&arg, Args &&... args) {
+auto &&get_nth_argument(Arg &&arg, Args &&...) {
   return std::forward<Arg>(arg);
 }
 
 template <size_t N, class Arg, class... Args, std::enable_if_t<N != 0, int> = 0>
-auto &&get_nth_argument(Arg &&arg, Args &&... args) {
+auto &&get_nth_argument(Arg &&, Args &&... args) {
   return get_nth_argument<N - 1>(std::forward<Args &&>(args)...);
 }
 

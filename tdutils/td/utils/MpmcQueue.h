@@ -347,7 +347,7 @@ class MpmcQueue {
   static std::string get_description() {
     return "NEW Mpmc queue (fetch and add array queue)";
   }
-  MpmcQueue(size_t block_size, size_t threads_n) : hazard_pointers_{threads_n} {
+  MpmcQueue([[maybe_unused]] size_t block_size, size_t threads_n) : hazard_pointers_{threads_n} {
     auto node = make_unique<Node>();
     write_pos_ = node.get();
     read_pos_ = node.get();

@@ -131,19 +131,19 @@ struct Unary final : TLB {
   int get_size(const vm::CellSlice& cs) const override {
     return cs.count_leading(1) + 1;
   }
-  bool validate_skip(vm::CellSlice& cs, bool weak, int& n) const {
+  bool validate_skip(vm::CellSlice& cs, [[maybe_unused]] bool weak, int& n) const {
     return cs.advance((n = cs.count_leading(1)) + 1);
   }
   bool skip(vm::CellSlice& cs, int& n) const {
     return validate_skip(cs, false, n);
   }
-  bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override {
+  bool validate_skip([[maybe_unused]] int* ops, vm::CellSlice& cs, [[maybe_unused]] bool weak = false) const override {
     return skip(cs);
   }
   bool skip(vm::CellSlice& cs) const override {
     return cs.advance(get_size(cs));
   }
-  bool validate(int* ops, const vm::CellSlice& cs, bool weak = false) const override {
+  bool validate([[maybe_unused]] int* ops, const vm::CellSlice& cs, [[maybe_unused]] bool weak = false) const override {
     return cs.have(get_size(cs));
   }
 };
@@ -163,7 +163,7 @@ struct HmLabel final : TLB_Complex {
     int n;
     return skip(cs, n);
   }
-  bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override {
+  bool validate_skip([[maybe_unused]] int* ops, vm::CellSlice& cs, bool weak = false) const override {
     int n;
     return validate_skip(cs, weak, n);
   }
@@ -188,7 +188,7 @@ struct HashmapNode final : TLB_Complex {
   int get_size(const vm::CellSlice& cs) const override;
   bool skip(vm::CellSlice& cs) const override;
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
-  int get_tag(const vm::CellSlice& cs) const override {
+  int get_tag(const vm::CellSlice&) const override {
     return n > 0 ? hmn_fork : n;
   }
 };
@@ -247,7 +247,7 @@ struct HashmapAugNode final : TLB_Complex {
   }
   bool skip(vm::CellSlice& cs) const override;
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
-  int get_tag(const vm::CellSlice& cs) const override {
+  int get_tag(const vm::CellSlice&) const override {
     return n > 0 ? ahmn_fork : n;
   }
 };
@@ -413,7 +413,7 @@ struct CommonMsgInfo::Record_int_msg_info {
 extern const CommonMsgInfo t_CommonMsgInfo;
 
 struct TickTock final : TLB {
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return 2;
   }
 };
@@ -547,7 +547,7 @@ extern const RefTo<Account> t_Ref_AccountE;
 
 struct AccountStatus final : TLB {
   enum { acc_state_uninit, acc_state_frozen, acc_state_active, acc_state_nonexist };
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return 2;
   }
   int get_tag(const vm::CellSlice& cs) const override {
@@ -572,7 +572,7 @@ struct ShardAccount final : TLB_Complex {
       return valid = false;
     }
   };
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return 0x10140;
   }
   bool skip(vm::CellSlice& cs) const override {
@@ -664,7 +664,7 @@ struct ComputeSkipReason final : TLB {
   int get_size(const vm::CellSlice& cs) const override {
     return cs.prefetch_ulong(2) == 3 ? 3 : 2;
   }
-  bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override {
+  bool validate_skip([[maybe_unused]] int* ops, vm::CellSlice& cs, [[maybe_unused]] bool weak = false) const override {
     int tag = get_tag(cs);
     return tag >= 0 && cs.advance(tag == 3 ? 3 : 2);
   }
@@ -764,7 +764,7 @@ struct HashUpdate final : TLB_Complex {
   bool skip(vm::CellSlice& cs) const override {
     return cs.advance(8 + 256 * 2);
   }
-  bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override {
+  bool validate_skip([[maybe_unused]] int* ops, vm::CellSlice& cs, [[maybe_unused]] bool weak = false) const override {
     return cs.fetch_ulong(8) == 0x72 && cs.advance(256 * 2);
   }
 };
@@ -906,7 +906,7 @@ struct OutMsgDescr final : TLB_Complex {
 extern const OutMsgDescr t_OutMsgDescr;
 
 struct EnqueuedMsg final : TLB_Complex {
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return 0x10040;
   }
   bool skip(vm::CellSlice& cs) const override {
@@ -954,7 +954,7 @@ struct OutMsgQueue final : TLB_Complex {
 extern const OutMsgQueue t_OutMsgQueue;
 
 struct ProcessedUpto final : TLB {
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return 64 + 256;
   }
 };
@@ -973,7 +973,7 @@ extern const RefTo<OutMsgQueueInfo> t_Ref_OutMsgQueueInfo;
 
 struct ExtBlkRef final : TLB {
   enum { fixed_size = 64 + 32 + 256 * 2 };
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return fixed_size;
   }
   bool unpack(vm::CellSlice& cs, ton::BlockIdExt& blkid, ton::LogicalTime* end_lt = nullptr) const;
@@ -995,14 +995,14 @@ extern const BlkMasterInfo t_BlkMasterInfo;
 
 struct ShardIdent final : TLB_Complex {
   struct Record;
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return 2 + 6 + 32 + 64;
   }
   bool skip(vm::CellSlice& cs) const override {
     return cs.advance(get_size(cs));
   }
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
-  int get_tag(const vm::CellSlice& cs) const override {
+  int get_tag(const vm::CellSlice&) const override {
     return 0;
   }
   bool unpack(vm::CellSlice& cs, Record& data) const;
@@ -1034,7 +1034,7 @@ struct ShardIdent::Record {
 extern const ShardIdent t_ShardIdent;
 
 struct BlockIdExt final : TLB_Complex {
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return 2 + 6 + 32 + 64 + 32 + 256 * 2;
   }
   bool skip(vm::CellSlice& cs) const override {
@@ -1061,7 +1061,7 @@ extern const ShardState t_ShardState;
 struct ShardState_aux final : TLB_Complex {
   bool skip(vm::CellSlice& cs) const override;
   bool validate_skip(int* ops, vm::CellSlice& cs, bool weak = false) const override;
-  int get_tag(const vm::CellSlice& cs) const override {
+  int get_tag(const vm::CellSlice&) const override {
     return 0;
   }
 };
@@ -1099,7 +1099,7 @@ extern const McStateExtra t_McStateExtra;
 
 struct KeyExtBlkRef final : TLB {
   enum { fixed_size = 1 + ExtBlkRef::fixed_size };
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return fixed_size;
   }
 };
@@ -1108,7 +1108,7 @@ extern const KeyExtBlkRef t_KeyExtBlkRef;
 
 struct KeyMaxLt final : TLB {
   enum { fixed_size = 1 + 64 };
-  int get_size(const vm::CellSlice& cs) const override {
+  int get_size(const vm::CellSlice&) const override {
     return fixed_size;
   }
   bool null_value(vm::CellBuilder& cb) const override {

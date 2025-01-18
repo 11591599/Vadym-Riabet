@@ -279,7 +279,7 @@ class Overlays : public td::actor::Actor {
     virtual void receive_query(adnl::AdnlNodeIdShort src, OverlayIdShort overlay_id, td::BufferSlice data,
                                td::Promise<td::BufferSlice> promise) = 0;
     virtual void receive_broadcast(PublicKeyHash src, OverlayIdShort overlay_id, td::BufferSlice data) = 0;
-    virtual void check_broadcast(PublicKeyHash src, OverlayIdShort overlay_id, td::BufferSlice data,
+    virtual void check_broadcast([[maybe_unused]] PublicKeyHash src, [[maybe_unused]] OverlayIdShort overlay_id, [[maybe_unused]] td::BufferSlice data,
                                  td::Promise<td::Unit> promise) {
       promise.set_value(td::Unit());
     }

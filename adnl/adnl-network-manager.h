@@ -97,7 +97,7 @@ class AdnlNetworkManager : public td::actor::Actor {
 
 namespace td {
 
-inline td::StringBuilder &operator<<(td::StringBuilder &sb, const ton::adnl::AdnlNetworkManager::PrintId &id) {
+inline td::StringBuilder &operator<<(td::StringBuilder &sb, const ton::adnl::AdnlNetworkManager::PrintId &) {
   sb << "[networkmanager]";
   return sb;
 }
