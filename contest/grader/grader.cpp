@@ -127,8 +127,7 @@ public:
 		return ton::fetch_tl_object<ton_api::contest_test>(data, true);
 	}
 
-	void got_solution_result(td::Result<td::BufferSlice> res, bool valid, td::Ref<vm::Cell> original_merkle_update,
-													 double elapsed, double cpu_time) {
+	void got_solution_result(td::Result<td::BufferSlice> res, bool valid, td::Ref<vm::Cell> original_merkle_update, double elapsed, double cpu_time) {
 		bool got_valid = res.is_ok();
 		if(got_valid != valid) {
 			printf("%*lu  %-*s %8.5f %8.5f  ERROR  expected %s, found %s\n", (int)test_idx_column_width_, test_idx_ + 1,
@@ -227,7 +226,7 @@ int main(int argc, char* argv[]) {
 	});
 	std::string tests_dir = "tests/";
 	p.add_option('d', "tests", "directory with tests (default: tests/)",
-							 [&](td::Slice arg) { tests_dir = arg.str() + "/"; });
+				[&](td::Slice arg) { tests_dir = arg.str() + "/"; });
 	td::uint32 threads = 8;
 	p.add_checked_option('t', "threads", "number of threads (default: 8)", [&](td::Slice arg) {
 		TRY_RESULT_ASSIGN(threads, td::to_integer_safe<td::uint32>(arg));
