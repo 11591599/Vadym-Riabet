@@ -15,6 +15,7 @@
 #include "ton/ton-tl.hpp"
 #include "block-auto.h"
 #include "contest/solution/solution.hpp"
+#include "contest/solution/profile.hpp"
 #include "td/utils/PathView.h"
 #include "td/utils/port/signals.h"
 #include "vm/vm.h"
@@ -185,6 +186,8 @@ public:
 		printf("Total CPU time (only passed valid tests): %.5f\n", total_cpu_time_);
 		if(cnt_fail_) printf("Failed %lu/%lu tests\n", cnt_fail_, test_files_.size());
 		if(cnt_fatal_) printf("FATAL ERROR %lu/%lu tests\n", cnt_fatal_, test_files_.size());
+		printf("\n");
+		Profile::show_stats();
 		exit(0);
 	}
 

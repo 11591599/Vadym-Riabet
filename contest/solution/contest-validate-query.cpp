@@ -15,6 +15,7 @@
 #include "common/errorlog.h"
 #include "fabric.h"
 #include "deserialize.hpp"
+#include "profile.hpp"
 #include <ctime>
 
 namespace solution {
@@ -174,7 +175,7 @@ void ContestValidateQuery::finish_query() {
  * Then the function also sends requests to the ValidatorManager to fetch blocks and shard stated.
  */
 void ContestValidateQuery::start_up() {
-	td::Timer timer{};
+	PROFILER("start_up");
 	rand_seed_.set_zero();
 	if(ShardIdFull(id_) != shard_) {
 		reject_query(PSTRING() << "block candidate belongs to shard " << ShardIdFull(id_).to_str() << " different from current shard " << shard_.to_str());
@@ -193,7 +194,6 @@ void ContestValidateQuery::start_up() {
 		reject_query("error unpacking block candidate");
 		return;
 	}
-	std::cerr << "unpack " << timer.elapsed() << std::endl;
 	if(prev_blocks.size() > 2) {
 		reject_query("cannot have more than two previous blocks");
 		return;
@@ -251,7 +251,6 @@ void ContestValidateQuery::start_up() {
 	td::actor::send_closure_later(actor_id(this), &ContestValidateQuery::after_get_mc_state, fetch_block_state(mc_blkid_));
 	// ...
 	CHECK(pending);
-	std::cerr << "Startup " << timer.elapsed() << std::endl;
 }
 
 /**
@@ -265,6 +264,7 @@ void ContestValidateQuery::start_up() {
  * @returns True if the block candidate was successfully unpacked, false otherwise.
  */
 bool ContestValidateQuery::unpack_block_candidate() {
+	PROFILER("unpack");
 	vm::BagOfCells boc1;
 	// 1. deserialize block itself
 	auto res1 = boc1.deserialize(block_data);
@@ -457,7 +457,7 @@ bool ContestValidateQuery::extract_collated_data() {
  * @param res The result of the masterchain state retrieval.
  */
 void ContestValidateQuery::after_get_mc_state(td::Result<Ref<ShardState>> res) {
-	td::Timer timer{};
+	PROFILER("after_mc");
 	LOG(INFO) << "in ContestValidateQuery::after_get_mc_state() for " << mc_blkid_.to_str();
 	--pending;
 	if (res.is_error()) {
@@ -473,7 +473,6 @@ void ContestValidateQuery::after_get_mc_state(td::Result<Ref<ShardState>> res) {
 			fatal_error("cannot validate new block");
 		}
 	}
-	std::cerr << "After get mc state " << timer.elapsed() << std::endl;
 }
 
 /**
@@ -483,7 +482,7 @@ void ContestValidateQuery::after_get_mc_state(td::Result<Ref<ShardState>> res) {
  * @param res The result of the shard state retrieval.
  */
 void ContestValidateQuery::after_get_shard_state(int idx, td::Result<Ref<ShardState>> res) {
-	td::Timer timer{};
+	PROFILER("after_shard");
 	LOG(INFO) << "in ContestValidateQuery::after_get_shard_state(" << idx << ")";
 	--pending;
 	if (res.is_error()) {
@@ -501,7 +500,6 @@ void ContestValidateQuery::after_get_shard_state(int idx, td::Result<Ref<ShardSt
 			fatal_error("cannot validate new block");
 		}
 	}
-	std::cerr << "after_get_shard_state " << timer.elapsed() << std::endl;
 }
 
 /**
@@ -1123,7 +1121,7 @@ bool ContestValidateQuery::request_neighbor_queues() {
  * @param res The obtained outbound queue.
  */
 void ContestValidateQuery::got_neighbor_out_queue(int i, td::Result<Ref<MessageQueue>> res) {
-	td::Timer timer{};
+	PROFILER("neighbor_out_queue");
 	--pending;
 	if (res.is_error()) {
 		fatal_error(res.move_as_error());
@@ -1182,7 +1180,6 @@ void ContestValidateQuery::got_neighbor_out_queue(int i, td::Result<Ref<MessageQ
 		LOG(INFO) << "all neighbor output queues fetched";
 		try_validate();
 	}
-	std::cerr << "got_neighbor_out_queue " << timer.elapsed() << std::endl;
 }
 
 /**
@@ -1281,7 +1278,7 @@ Ref<MasterchainStateQ> ContestValidateQuery::get_aux_mc_state(BlockSeqno seqno) 
  * @param res The result of retrieving the shard state.
  */
 void ContestValidateQuery::after_get_aux_shard_state(ton::BlockIdExt blkid, td::Result<Ref<ShardState>> res) {
-	td::Timer timer{};
+	PROFILER("after_aux_shard");
 	LOG(DEBUG) << "in ContestValidateQuery::after_get_aux_shard_state(" << blkid.to_str() << ")";
 	--pending;
 	if (res.is_error()) {
@@ -1304,7 +1301,6 @@ void ContestValidateQuery::after_get_aux_shard_state(ton::BlockIdExt blkid, td::
 		return;
 	}
 	try_validate();
-	std::cerr << "after_get_aux_shard_state " << timer.elapsed() << std::endl;
 }
 
 /**

@@ -2,9 +2,9 @@
 
 #include "tdutils/td/utils/Span.h"
 #include "tdutils/td/utils/misc.h"
-#include "tdutils/td/utils/Timer.h"
 #include "crypto/vm/cells/DataCell.h"
 #include "crypto/vm/cells/CellBuilder.h"
+#include "profile.hpp"
 
 struct Info {
 	enum : uint32_t { boc_idx = 0x68ff65f3, boc_idx_crc32c = 0xacc3a728, boc_generic = 0xb5ee9c72 };
@@ -74,6 +74,7 @@ struct CellSerializationInfo {
 	}
 
 	td::Ref<vm::DataCell> create_data_cell(td::Slice cell_slice, const std::array<td::Ref<vm::Cell>, 4> &refs) const {
+		PROFILER("sub_deserialize");
 		vm::CellBuilder cb;
 		int bits = data_len * 8;
 		if(data_with_bits) bits -= 1 + td::count_trailing_zeroes32(cell_slice[data_offset + data_len - 1]);
@@ -84,7 +85,7 @@ struct CellSerializationInfo {
 };
 
 std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
-	td::Timer timer;
+	PROFILER("deserialize");
 	Info info;
 	info.parse_serialized_header(data);
 	std::vector<int> roots_idx(info.root_count);
@@ -135,6 +136,5 @@ std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
 	}
 	std::vector<td::Ref<vm::Cell>> roots(info.root_count);
 	for(int i = 0; i < info.root_count; ++i) roots[i] = cell_list[info.cell_count - 1 - roots_idx[i]];
-	std::cerr << "deserialize " << timer.elapsed() << std::endl;
 	return roots;
 }
