@@ -14,6 +14,7 @@
 #include "vm/cells/MerkleUpdate.h"
 #include "common/errorlog.h"
 #include "fabric.h"
+#include "deserialize.hpp"
 #include <ctime>
 
 namespace solution {
@@ -31,7 +32,10 @@ using namespace std::literals::string_literals;
  */
 std::string ErrorCtx::as_string() const {
 	std::string a;
-	for (const auto& s : entries_) {
+	std::size_t expected_size = 0;
+	for(const auto& s : entries_) expected_size += s.size() + 3;
+	a.reserve(expected_size);
+	for(const auto& s : entries_) {
 		a += s;
 		a += " : ";
 	}
@@ -73,11 +77,7 @@ void ContestValidateQuery::abort_query(td::Status error) {
  * @returns False indicating that the validation failed.
  */
 bool ContestValidateQuery::reject_query(std::string error) {
-	error = error_ctx() + error;
-	LOG(WARNING) << "REJECT: aborting validation of block candidate for " << shard_.to_str() << " : " << error;
-	if (main_promise) {
-		main_promise.set_error(td::Status::Error(error));
-	}
+	if(main_promise) main_promise.set_error(td::Status::Error(error_ctx() + error));
 	stop();
 	return false;
 }
@@ -93,23 +93,6 @@ bool ContestValidateQuery::reject_query(std::string error) {
 bool ContestValidateQuery::reject_query(std::string err_msg, td::Status error) {
 	error.ensure_error();
 	return reject_query(err_msg + " : " + error.to_string());
-}
-
-/**
- * Rejects the validation and logs an error message.
- *
- * @param error The error message to be logged.
- *
- * @returns False indicating that the validation failed.
- */
-bool ContestValidateQuery::soft_reject_query(std::string error) {
-	error = error_ctx() + error;
-	LOG(WARNING) << "SOFT REJECT: aborting validation of block candidate for " << shard_.to_str() << " : " << error;
-	if (main_promise) {
-		main_promise.set_error(td::Status::Error(std::move(error)));
-	}
-	stop();
-	return false;
 }
 
 /**
@@ -192,70 +175,63 @@ void ContestValidateQuery::finish_query() {
  */
 void ContestValidateQuery::start_up() {
 	td::Timer timer{};
-	LOG(INFO) << "validate query for " << id_.to_str() << " started";
 	rand_seed_.set_zero();
-
-	if (ShardIdFull(id_) != shard_) {
-		soft_reject_query(PSTRING() << "block candidate belongs to shard " << ShardIdFull(id_).to_str()
-																<< " different from current shard " << shard_.to_str());
+	if(ShardIdFull(id_) != shard_) {
+		reject_query(PSTRING() << "block candidate belongs to shard " << ShardIdFull(id_).to_str() << " different from current shard " << shard_.to_str());
 		return;
 	}
-	if (workchain() != ton::basechainId) {
-		soft_reject_query("only basechain is supported");
-		return;
-	}
-	if (!shard_.is_valid_ext()) {
+	if(!shard_.is_valid_ext()) {
 		reject_query("requested to validate a block for an invalid shard");
 		return;
 	}
-	td::uint64 x = td::lower_bit64(shard_.shard);
-	if (x < 8) {
+	if(td::lower_bit64(shard_.shard) < 8) {
 		reject_query("a shard cannot be split more than 60 times");
 		return;
 	}
 	// 3. unpack block candidate (while necessary data is being loaded)
-	if (!unpack_block_candidate()) {
+	if(!unpack_block_candidate()) {
 		reject_query("error unpacking block candidate");
 		return;
 	}
-	if (prev_blocks.size() > 2) {
-		soft_reject_query("cannot have more than two previous blocks");
+	std::cerr << "unpack " << timer.elapsed() << std::endl;
+	if(prev_blocks.size() > 2) {
+		reject_query("cannot have more than two previous blocks");
 		return;
 	}
 	if (!prev_blocks.size()) {
-		soft_reject_query("must have one or two previous blocks to generate a next block");
+		reject_query("must have one or two previous blocks to generate a next block");
 		return;
 	}
 	if (prev_blocks.size() == 2) {
 		if (!(shard_is_parent(shard_, ShardIdFull(prev_blocks[0])) &&
 					shard_is_parent(shard_, ShardIdFull(prev_blocks[1])) && prev_blocks[0].id.shard < prev_blocks[1].id.shard)) {
-			soft_reject_query(
+			reject_query(
 					"the two previous blocks for a merge operation are not siblings or are not children of current shard");
 			return;
 		}
 		for (const auto& blk : prev_blocks) {
 			if (!blk.id.seqno) {
-				soft_reject_query("previous blocks for a block merge operation must have non-zero seqno");
+				reject_query("previous blocks for a block merge operation must have non-zero seqno");
 				return;
 			}
 		}
-		// soft_reject_query("merging shards is not implemented yet");
+		// reject_query("merging shards is not implemented yet");
 		// return;
 	} else {
 		CHECK(prev_blocks.size() == 1);
 		// creating next block
 		if (!ShardIdFull(prev_blocks[0]).is_valid_ext()) {
-			soft_reject_query("previous block does not have a valid id");
+			reject_query("previous block does not have a valid id");
 			return;
 		}
 		if (ShardIdFull(prev_blocks[0]) != shard_) {
 			if (!shard_is_parent(ShardIdFull(prev_blocks[0]), shard_)) {
-				soft_reject_query("previous block does not belong to the shard we are generating a new block for");
+				reject_query("previous block does not belong to the shard we are generating a new block for");
 				return;
 			}
 		}
 		if (after_split_) {
-			// soft_reject_query("splitting shards not implemented yet");
+			// reject_query("splitting shards not implemented yet");
 			// return;
 		}
 	}
@@ -289,24 +265,18 @@ void ContestValidateQuery::start_up() {
  * @returns True if the block candidate was successfully unpacked, false otherwise.
  */
 bool ContestValidateQuery::unpack_block_candidate() {
-	vm::BagOfCells boc1, boc2;
+	vm::BagOfCells boc1;
 	// 1. deserialize block itself
 	auto res1 = boc1.deserialize(block_data);
-	if (res1.is_error()) {
-		return reject_query("cannot deserialize block", res1.move_as_error());
-	}
-	if (boc1.get_root_count() != 1) {
-		return reject_query("block BoC must contain exactly one root");
-	}
+	if(res1.is_error()) return reject_query("cannot deserialize block", res1.move_as_error());
+	if(boc1.get_root_count() != 1) return reject_query("block BoC must contain exactly one root");
 	block_root_ = boc1.get_root_cell();
 	CHECK(block_root_.not_null());
 	// 3. initial block parse
 	{
 		auto guard = error_ctx_add_guard("parsing block header");
 		try {
-			if (!init_parse()) {
-				return reject_query("invalid block header");
-			}
+			if(!init_parse()) return reject_query("invalid block header");
 		} catch (vm::VmError& err) {
 			return reject_query(err.get_msg());
 		} catch (vm::VmVirtError& err) {
@@ -315,15 +285,7 @@ bool ContestValidateQuery::unpack_block_candidate() {
 	}
 	// ...
 	// 8. deserialize collated data
-	auto res2 = boc2.deserialize(collated_data);
-	if (res2.is_error()) {
-		return reject_query("cannot deserialize collated data", res2.move_as_error());
-	}
-	int n = boc2.get_root_count();
-	CHECK(n >= 0);
-	for (int i = 0; i < n; i++) {
-		collated_roots_.emplace_back(boc2.get_root_cell(i));
-	}
+	collated_roots_ = deserialize(collated_data);
 	// 9. extract/classify collated data
 	return extract_collated_data();
 }

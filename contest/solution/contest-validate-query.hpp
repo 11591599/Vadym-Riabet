@@ -212,7 +212,6 @@ private:
 	void abort_query(td::Status error);
 	bool reject_query(std::string error);
 	bool reject_query(std::string err_msg, td::Status error);
-	bool soft_reject_query(std::string error);
 	void start_up() override;
 
 	bool fatal_error(td::Status error);
