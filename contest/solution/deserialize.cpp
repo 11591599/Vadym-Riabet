@@ -1,9 +1,8 @@
 #include "deserialize.hpp"
 
-#include "tdutils/td/utils/Span.h"
-#include "tdutils/td/utils/misc.h"
+#include <openssl/sha.h>
+
 #include "crypto/vm/cells/DataCell.h"
-#include "crypto/openssl/digest.h"
 #include "profile.hpp"
 
 struct CellSliceInfo {
@@ -119,64 +118,54 @@ struct CellSerializationInfo {
 		info.bits_ = bits;
 		info.refs_count_ = (uint8_t)refs_cnt;
 		info.is_special_ = special;
-		info.level_mask_ = level_mask.get_mask() & 7;
-		info.hash_count_ = hash_count & 7;
-		info.virtualization_ = virtualization & 7;
+		info.level_mask_ = (uint8_t)level_mask.get_mask();
+		info.hash_count_ = (uint8_t)hash_count;
+		info.virtualization_ = (uint8_t)virtualization;
 		auto data_cell = std::make_unique<CellWithUniquePtrStorage>(info.get_storage_size(), info);
 		char* storage = data_cell->get_storage();
 		// init data
 		uint8_t* data_ptr = info.get_data(storage);
-		std::memcpy(data_ptr, data, (bits+7)/8);
+		std::memcpy(data_ptr, data, data_len);
 		// init refs
 		vm::Cell** refs_ptr = info.get_refs(storage);
 		for(int i = 0; i < refs_cnt; ++i) refs_ptr[i] = refs[i].release();
-		// init hashes and depth
 		vm::Cell::Hash* hashes_ptr = info.get_hashes(storage);
-		uint16_t* depth_ptr = info.get_depth(storage);
-		// NB: be careful with special cells
-		auto total_hash_count = level_mask.get_hashes_count();
-		auto hash_i_offset = total_hash_count - hash_count;
+		uint32_t hash_i_offset = level_mask.get_hashes_count() - hash_count;
 		uint8_t tmp[2];
 		tmp[1] = info.d2();
-		PROFILER("compute_hashes");
-		for(td::uint32 level_i = 0, hash_i = 0, level = level_mask.get_level(); level_i <= level; level_i++) {
+		for(td::uint32 level_i = 0, hash_i = 0, level = level_mask.get_level(); level_i <= level; ++level_i) {
 			if(!level_mask.is_significant(level_i)) continue;
 			if(hash_i < hash_i_offset) {
 				++hash_i;
 				continue;
 			}
 			tmp[0] = info.d1(level_mask.apply(level_i));
-			static __thread digest::SHA256* hasher;
-			td::init_thread_local<digest::SHA256>(hasher);
-			hasher->reset();
-			hasher->feed(tmp, 2);
-			if(hash_i == hash_i_offset) hasher->feed(data_ptr, (bits + 7) >> 3);
-			else hasher->feed(hashes_ptr[hash_i - hash_i_offset - 1].as_slice());
-			auto dest_i = hash_i - hash_i_offset;
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+			SHA256_CTX sha_ctx;
+			SHA256_Init(&sha_ctx);
+			SHA256_Update(&sha_ctx, tmp, 2);
+			if(hash_i == hash_i_offset) SHA256_Update(&sha_ctx, data_ptr, data_len);
+			else SHA256_Update(&sha_ctx, hashes_ptr[hash_i - hash_i_offset - 1].as_array().begin(), vm::Cell::hash_bytes);
+			const uint32_t level_i_ref = (type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate) ? level_i + 1 : level_i;
 			// calc depth
 			td::uint16 depth = 0;
 			for(int i = 0; i < info.refs_count_; i++) {
-				td::uint16 child_depth = 0;
-				if(type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate)
-					child_depth = refs_ptr[i]->get_depth(level_i + 1);
-				else
-					child_depth = refs_ptr[i]->get_depth(level_i);
+				const td::uint16 child_depth = refs_ptr[i]->get_depth(level_i_ref);
 				// add depth into hash
 				td::uint8 child_depth_buf[vm::Cell::depth_bytes];
 				td::bitstring::bits_store_long(child_depth_buf, child_depth, vm::Cell::depth_bits);
-				hasher->feed(child_depth_buf, vm::Cell::depth_bytes);
+				SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes);
 				depth = std::max(depth, child_depth);
 			}
 			if(info.refs_count_) ++depth;
-			depth_ptr[dest_i] = depth;
+			const uint32_t dest_i = hash_i - hash_i_offset;
+			info.get_depth(storage)[dest_i] = depth;
 			// children hash
-			for(int i = 0; i < info.refs_count_; i++) {
-				if(type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate)
-					hasher->feed(refs_ptr[i]->get_hash(level_i + 1).as_slice());
-				else
-					hasher->feed(refs_ptr[i]->get_hash(level_i).as_slice());
-			}
-			hasher->extract(hashes_ptr[dest_i].as_slice());
+			for(int i = 0; i < info.refs_count_; i++)
+				SHA256_Update(&sha_ctx, refs_ptr[i]->get_hash(level_i_ref).as_array().begin(), vm::Cell::hash_bytes);
+			SHA256_Final(const_cast<uint8_t*>(hashes_ptr[dest_i].as_array().begin()), &sha_ctx);
+			#pragma GCC diagnostic pop
 			++hash_i;
 		}
 		return td::Ref<vm::DataCell>(data_cell.release(), td::Ref<vm::DataCell>::acquire_t{});

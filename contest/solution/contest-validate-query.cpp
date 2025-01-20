@@ -1755,23 +1755,14 @@ bool ContestValidateQuery::compute_minted_amount(block::CurrencyCollection& to_m
 	return to_mint.set_zero();
 }
 
-bool ContestValidateQuery::postcheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::CellSlice> old_value,
-																												Ref<vm::CellSlice> new_value) {
-	LOG(DEBUG) << "checking update of account " << acc_id.to_hex(256);
+bool ContestValidateQuery::postcheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::CellSlice> old_value, Ref<vm::CellSlice> new_value) {
 	old_value = ps_.account_dict_->extract_value(std::move(old_value));
 	new_value = ns_.account_dict_->extract_value(std::move(new_value));
 	auto acc_blk_root = account_blocks_dict_->lookup(acc_id, 256);
-	if (acc_blk_root.is_null()) {
-		return reject_query("the state of account "s + acc_id.to_hex(256) +
-												" changed in the new state with respect to the old state, but the block contains no "
-												"AccountBlock for this account");
-	}
-	if (new_value.not_null()) {
-		if (!block::tlb::t_ShardAccount.validate_csr(10000, new_value)) {
-			return reject_query("new state of account "s + acc_id.to_hex(256) +
-													" failed to pass hand-written validity checks for ShardAccount");
-		}
-	}
+	if(acc_blk_root.is_null())
+		return reject_query("the state of account "s + acc_id.to_hex(256) + " changed in the new state with respect to the old state, but the block contains no AccountBlock for this account");
+	if(new_value.not_null() && !block::tlb::t_ShardAccount.validate_csr(10000, new_value))
+		return reject_query("new state of account "s + acc_id.to_hex(256) + " failed to pass hand-written validity checks for ShardAccount");
 	block::gen::AccountBlock::Record acc_blk;
 	block::gen::HASH_UPDATE::Record hash_upd;
 	if (!(tlb::csr_unpack(std::move(acc_blk_root), acc_blk) &&
