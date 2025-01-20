@@ -62,15 +62,6 @@ ContestValidateQuery::ContestValidateQuery(BlockIdExt block_id, td::BufferSlice 
 	, shard_pfx_len_(ton::shard_prefix_length(shard_)) {}
 
 /**
- * Aborts the validation with the given error.
- *
- * @param error The error encountered.
- */
-void ContestValidateQuery::abort_query(td::Status error) {
-	(void)fatal_error(std::move(error));
-}
-
-/**
  * Rejects the validation and logs an error message.
  *
  * @param error The error message to be logged.
@@ -92,7 +83,6 @@ bool ContestValidateQuery::reject_query(std::string error) {
  * @returns False indicating that the validation failed.
  */
 bool ContestValidateQuery::reject_query(std::string err_msg, td::Status error) {
-	error.ensure_error();
 	return reject_query(err_msg + " : " + error.to_string());
 }
 
@@ -104,39 +94,9 @@ bool ContestValidateQuery::reject_query(std::string err_msg, td::Status error) {
  * @returns False indicating that the validation failed.
  */
 bool ContestValidateQuery::fatal_error(td::Status error) {
-	error.ensure_error();
-	LOG(WARNING) << "aborting validation of block candidate for " << shard_.to_str() << " : " << error.to_string();
-	if (main_promise) {
-		main_promise.set_error(std::move(error));
-	}
+	if(main_promise) main_promise.set_error(std::move(error));
 	stop();
 	return false;
-}
-
-/**
- * Handles a fatal error during validation.
- *
- * @param err_code Error code.
- * @param err_msg Error message.
- *
- * @returns False indicating that the validation failed.
- */
-bool ContestValidateQuery::fatal_error(int err_code, std::string err_msg) {
-	return fatal_error(td::Status::Error(err_code, error_ctx() + err_msg));
-}
-
-/**
- * Handles a fatal error during validation.
- *
- * @param err_code Error code.
- * @param err_msg Error message.
- * @param error Error status.
- *
- * @returns False indicating that the validation failed.
- */
-bool ContestValidateQuery::fatal_error(int err_code, std::string err_msg, td::Status error) {
-	error.ensure_error();
-	return fatal_error(err_code, err_msg + " : " + error.to_string());
 }
 
 /**
@@ -237,17 +197,14 @@ void ContestValidateQuery::start_up() {
 	}
 	// 4. load state(s) corresponding to previous block(s)
 	prev_states.resize(prev_blocks.size());
-	// pending += prev_blocks.size() + 1;
 	for (int i = 0; (unsigned)i < prev_blocks.size(); i++) {
 		// 4.1. load state
 		LOG(DEBUG) << "sending wait_block_state() query #" << i << " for " << prev_blocks[i].to_str() << " to Manager";
 		++pending;
-		// after_get_shard_state(i, fetch_block_state(prev_blocks[i]));
 		td::actor::send_closure_later(actor_id(this), &ContestValidateQuery::after_get_shard_state, i, fetch_block_state(prev_blocks[i]));
 	}
 	// 5. request masterchain state referred to in the block
 	++pending;
-	// after_get_mc_state(fetch_block_state(mc_blkid_));
 	td::actor::send_closure_later(actor_id(this), &ContestValidateQuery::after_get_mc_state, fetch_block_state(mc_blkid_));
 	// ...
 	CHECK(pending);
@@ -522,10 +479,10 @@ bool ContestValidateQuery::process_mc_state(Ref<MasterchainState> mc_state) {
 	mc_state_ = Ref<MasterchainStateQ>(std::move(mc_state));
 	mc_state_root_ = mc_state_->root_cell();
 	if (mc_state_root_.is_null()) {
-		return fatal_error(-666, "unable to load reference masterchain state "s + mc_blkid_.to_str());
+		return fatal_error("unable to load reference masterchain state "s + mc_blkid_.to_str());
 	}
 	if (!try_unpack_mc_state()) {
-		return fatal_error(-666, "cannot unpack reference masterchain state "s + mc_blkid_.to_str());
+		return fatal_error("cannot unpack reference masterchain state "s + mc_blkid_.to_str());
 	}
 	return register_mc_state(mc_state_);
 }
@@ -540,21 +497,19 @@ bool ContestValidateQuery::try_unpack_mc_state() {
 	auto guard = error_ctx_add_guard("unpack last mc state");
 	try {
 		if (mc_state_.is_null()) {
-			return fatal_error(-666, "no previous masterchain state present");
+			return fatal_error("no previous masterchain state present");
 		}
 		mc_state_root_ = mc_state_->root_cell();
 		if (mc_state_root_.is_null()) {
-			return fatal_error(-666, "latest masterchain state does not have a root cell");
+			return fatal_error("latest masterchain state does not have a root cell");
 		}
 		auto res = block::ConfigInfo::extract_config(
 				mc_state_root_, block::ConfigInfo::needShardHashes | block::ConfigInfo::needLibraries |
 														block::ConfigInfo::needValidatorSet | block::ConfigInfo::needWorkchainInfo |
 														block::ConfigInfo::needStateExtraRoot | block::ConfigInfo::needCapabilities |
 														block::ConfigInfo::needPrevBlocks);
-		if (res.is_error()) {
-			return fatal_error(-666, "cannot extract configuration from reference masterchain state "s + mc_blkid_.to_str() +
-																	 " : " + res.move_as_error().to_string());
-		}
+		if(res.is_error())
+			return fatal_error("cannot extract configuration from reference masterchain state "s + mc_blkid_.to_str() + " : " + res.move_as_error().to_string());
 		config_ = res.move_as_ok();
 		CHECK(config_);
 		config_->set_block_id_ext(mc_blkid_);
@@ -610,9 +565,9 @@ bool ContestValidateQuery::try_unpack_mc_state() {
 		msg_metadata_enabled_ = config_->has_capability(ton::capMsgMetadata);
 		deferring_messages_enabled_ = config_->has_capability(ton::capDeferMessages);
 	} catch (vm::VmError& err) {
-		return fatal_error(-666, err.get_msg());
+		return fatal_error(err.get_msg());
 	} catch (vm::VmVirtError& err) {
-		return fatal_error(-666, err.get_msg());
+		return fatal_error(err.get_msg());
 	}
 	return true;
 }
@@ -938,7 +893,7 @@ bool ContestValidateQuery::compute_prev_state() {
 		Ref<vm::Cell> aux_root = prev_states[1]->root_cell();
 		if (!block::gen::t_ShardState.cell_pack_split_state(prev_state_root_, prev_states[0]->root_cell(),
 																												prev_states[1]->root_cell())) {
-			return fatal_error(-667, "cannot construct mechanically merged previously state");
+			return fatal_error("cannot construct mechanically merged previously state", -667);
 		}
 	}
 	state_usage_tree_ = std::make_shared<vm::CellUsageTree>();
@@ -959,7 +914,7 @@ bool ContestValidateQuery::unpack_merge_prev_state() {
 	// 2. extract the two previous states
 	Ref<vm::Cell> root0, root1;
 	if (!block::gen::t_ShardState.cell_unpack_split_state(prev_state_root_, root0, root1)) {
-		return fatal_error(-667, "cannot unsplit a virtual split_state after a merge");
+		return fatal_error("cannot unsplit a virtual split_state after a merge", -667);
 	}
 	// 3. unpack previous states
 	// 3.1. unpack left ancestor
@@ -1132,8 +1087,7 @@ void ContestValidateQuery::got_neighbor_out_queue(int i, td::Result<Ref<MessageQ
 	LOG(INFO) << "obtained outbound queue for neighbor #" << i << " : " << descr.shard().to_str();
 	if (outq_descr->get_block_id() != descr.blk_) {
 		LOG(DEBUG) << "outq_descr->id = " << outq_descr->get_block_id().to_str() << " ; descr.id = " << descr.blk_.to_str();
-		fatal_error(
-				-667, "invalid outbound queue information returned for "s + descr.shard().to_str() + " : id or hash mismatch");
+		fatal_error("invalid outbound queue information returned for "s + descr.shard().to_str() + " : id or hash mismatch", -667);
 		return;
 	}
 	if (outq_descr->root_cell().is_null()) {
@@ -1279,24 +1233,21 @@ Ref<MasterchainStateQ> ContestValidateQuery::get_aux_mc_state(BlockSeqno seqno) 
  */
 void ContestValidateQuery::after_get_aux_shard_state(ton::BlockIdExt blkid, td::Result<Ref<ShardState>> res) {
 	PROFILER("after_aux_shard");
-	LOG(DEBUG) << "in ContestValidateQuery::after_get_aux_shard_state(" << blkid.to_str() << ")";
 	--pending;
-	if (res.is_error()) {
-		fatal_error("cannot load auxiliary masterchain state for "s + blkid.to_str() + " : " +
-								res.move_as_error().to_string());
+	if(res.is_error()) {
+		fatal_error("cannot load auxiliary masterchain state for "s + blkid.to_str() + " : " + res.move_as_error().to_string());
 		return;
 	}
 	auto state = Ref<MasterchainStateQ>(res.move_as_ok());
-	if (state.is_null()) {
+	if(state.is_null()) {
 		fatal_error("auxiliary masterchain state for "s + blkid.to_str() + " turned out to be null");
 		return;
 	}
-	if (state->get_block_id() != blkid) {
-		fatal_error("auxiliary masterchain state for "s + blkid.to_str() +
-								" turned out to correspond to a different block " + state->get_block_id().to_str());
+	if(state->get_block_id() != blkid) {
+		fatal_error("auxiliary masterchain state for "s + blkid.to_str() + " turned out to correspond to a different block " + state->get_block_id().to_str());
 		return;
 	}
-	if (!register_mc_state(std::move(state))) {
+	if(!register_mc_state(std::move(state))) {
 		fatal_error("cannot register auxiliary masterchain state for "s + blkid.to_str());
 		return;
 	}
@@ -1409,12 +1360,10 @@ bool ContestValidateQuery::fix_one_processed_upto(block::MsgProcessedUpto& proc,
 	auto seqno = std::min(proc.mc_seqno, mc_seqno_);
 	{
 		auto state = get_aux_mc_state(seqno);
-		if (state.is_null()) {
-			return fatal_error(
-					-666, PSTRING() << "cannot obtain masterchain state with seqno " << seqno << " (originally required "
-													<< proc.mc_seqno << ") in a MsgProcessedUpto record for "
-													<< ton::ShardIdFull{owner.workchain, proc.shard}.to_str() << " owned by " << owner.to_str());
-		}
+		if(state.is_null())
+			return fatal_error(PSTRING() << "cannot obtain masterchain state with seqno " << seqno << " (originally required "
+										<< proc.mc_seqno << ") in a MsgProcessedUpto record for "
+										<< ton::ShardIdFull{owner.workchain, proc.shard}.to_str() << " owned by " << owner.to_str());
 		proc.compute_shard_end_lt = state->get_config()->get_compute_shard_end_lt_func();
 	}
 	return (bool)proc.compute_shard_end_lt;
@@ -4273,25 +4222,22 @@ bool ContestValidateQuery::check_neighbor_outbound_message(Ref<vm::CellSlice> en
 		if (claimed_proc_lt_ && (claimed_proc_lt_ < lt || (claimed_proc_lt_ == lt && claimed_proc_hash_ < enq.hash_))) {
 			LOG(INFO) << "old processed_upto: " << ps_.processed_upto_->to_str();
 			LOG(INFO) << "new processed_upto: " << ns_.processed_upto_->to_str();
-			return fatal_error(
-					-669, PSTRING() << "internal inconsistency: new ProcessedInfo claims to have processed all messages up to ("
+			return fatal_error(PSTRING() << "internal inconsistency: new ProcessedInfo claims to have processed all messages up to ("
 													<< claimed_proc_lt_ << "," << claimed_proc_hash_.to_hex()
 													<< "), but we had somehow already processed a message (" << lt << "," << enq.hash_.to_hex()
-													<< ") from OutMsgQueue of neighbor " << nb.blk_.to_str() << " key " << key.to_hex(352));
+													<< ") from OutMsgQueue of neighbor " << nb.blk_.to_str() << " key " << key.to_hex(352), -669);
 		}
 		return true;
 	}
 	if (f1) {
 		// this message must have been imported and processed in this very block
 		// (because it is marked processed after this block, but not before)
-		if (!claimed_proc_lt_ || claimed_proc_lt_ < lt || (claimed_proc_lt_ == lt && claimed_proc_hash_ < enq.hash_)) {
-			return fatal_error(
-					-669, PSTRING() << "internal inconsistency: new ProcessedInfo claims to have processed all messages up to ("
+		if (!claimed_proc_lt_ || claimed_proc_lt_ < lt || (claimed_proc_lt_ == lt && claimed_proc_hash_ < enq.hash_))
+			return fatal_error(PSTRING() << "internal inconsistency: new ProcessedInfo claims to have processed all messages up to ("
 													<< claimed_proc_lt_ << "," << claimed_proc_hash_.to_hex()
 													<< "), but we had somehow processed in this block a message (" << lt << ","
 													<< enq.hash_.to_hex() << ") from OutMsgQueue of neighbor " << nb.blk_.to_str() << " key "
-													<< key.to_hex(352));
-		}
+													<< key.to_hex(352), -669);
 		// must have a msg_import_fin or msg_import_tr InMsg record
 		if (in_entry.is_null()) {
 			return reject_query("there is no InMsg entry for processing EnqueuedMsg with key "s + key.to_hex(352) +
@@ -4317,13 +4263,11 @@ bool ContestValidateQuery::check_neighbor_outbound_message(Ref<vm::CellSlice> en
 	unprocessed = true;
 	// the message is left unprocessed in our virtual "inbound queue"
 	// just a simple sanity check
-	if (claimed_proc_lt_ && !(claimed_proc_lt_ < lt || (claimed_proc_lt_ == lt && claimed_proc_hash_ < enq.hash_))) {
-		return fatal_error(
-				-669, PSTRING() << "internal inconsistency: new ProcessedInfo claims to have processed all messages up to ("
+	if (claimed_proc_lt_ && !(claimed_proc_lt_ < lt || (claimed_proc_lt_ == lt && claimed_proc_hash_ < enq.hash_)))
+		return fatal_error(PSTRING() << "internal inconsistency: new ProcessedInfo claims to have processed all messages up to ("
 												<< claimed_proc_lt_ << "," << claimed_proc_hash_.to_hex()
 												<< "), but we somehow have not processed a message (" << lt << "," << enq.hash_.to_hex()
-												<< ") from OutMsgQueue of neighbor " << nb.blk_.to_str() << " key " << key.to_hex(352));
-	}
+												<< ") from OutMsgQueue of neighbor " << nb.blk_.to_str() << " key " << key.to_hex(352), -669);
 	return true;
 }
 
@@ -5196,21 +5140,14 @@ Ref<vm::Cell> ContestValidateQuery::get_virt_state_root(td::Bits256 block_root_h
  * @returns True if the validation is successful, False otherwise.
  */
 bool ContestValidateQuery::try_validate() {
-	if (pending) {
+	if(pending) {
 		return true;
 	}
 	try {
-		if (!stage_) {
-			LOG(INFO) << "try_validate stage 0";
-			if (!compute_prev_state()) {
-				return fatal_error(-666, "cannot compute previous state");
-			}
-			if (!request_neighbor_queues()) {
-				return fatal_error("cannot request neighbor output queues");
-			}
-			if (!unpack_prev_state()) {
-				return fatal_error("cannot unpack previous state");
-			}
+		if(!stage_) {
+			if(!compute_prev_state()) return fatal_error("cannot compute previous state");
+			if(!request_neighbor_queues()) return fatal_error("cannot request neighbor output queues");
+			if(!unpack_prev_state()) return fatal_error("cannot unpack previous state");
 			if (!init_next_state()) {
 				return fatal_error("cannot unpack previous state");
 			}
@@ -5221,12 +5158,8 @@ bool ContestValidateQuery::try_validate() {
 				return reject_query("cannot request out msg queue size");
 			}
 			stage_ = 1;
-			if (pending) {
-				return true;
-			}
+			if(pending) return true;
 		}
-		LOG(INFO) << "try_validate stage 1";
-		LOG(INFO) << "running automated validity checks for block candidate " << id_.to_str();
 		if (!block::gen::t_BlockRelaxed.validate_ref(10000000, block_root_)) {
 			return reject_query("block "s + id_.to_str() + " failed to pass automated validity checks");
 		}
@@ -5285,7 +5218,7 @@ bool ContestValidateQuery::try_validate() {
 			return reject_query("cannot build state update");
 		}
 	} catch (vm::VmError& err) {
-		return fatal_error(-666, err.get_msg());
+		return fatal_error(err.get_msg());
 	} catch (vm::VmVirtError& err) {
 		return reject_query(err.get_msg());
 	}

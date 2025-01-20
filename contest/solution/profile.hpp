@@ -34,7 +34,7 @@ inline void show_stats() {
 	std::iota(inds.begin(), inds.end(), 0);
 	std::sort(inds.begin(), inds.end(), [&](int i, int j) { return records[i].time < records[j].time; });
 	constexpr int name_space = 20;
-	constexpr int call_space = 6;
+	constexpr int call_space = 8;
 	constexpr int time_space = 10;
 	printf("%-*s |%*s  %*s\n", name_space, "Name", call_space, "Calls", time_space, "Time");
 	printf("%s\n", std::string(name_space+call_space+time_space+4, '=').c_str());
@@ -46,10 +46,13 @@ inline void show_stats() {
 
 }
 
+#define PROFILER_CONCAT0(x, y) x##y
+#define PROFILER_CONCAT(x, y) PROFILER_CONCAT0(x,y)
+
 #define PROFILER(name)\
-	static int ___profile_id___ = -1;\
-	if(___profile_id___ == -1) {\
-		___profile_id___ = (int)Profile::records.size();\
+	static int PROFILER_CONCAT(___profile_id___,__LINE__) = -1;\
+	if(PROFILER_CONCAT(___profile_id___,__LINE__) == -1) {\
+		PROFILER_CONCAT(___profile_id___,__LINE__) = (int)Profile::records.size();\
 		Profile::records.emplace_back(name, __FILE__, __LINE__);\
 	}\
-	Profile::Block ___profile_block___(___profile_id___)
+	Profile::Block PROFILER_CONCAT(___profile_block___,__LINE__)(PROFILER_CONCAT(___profile_id___,__LINE__))

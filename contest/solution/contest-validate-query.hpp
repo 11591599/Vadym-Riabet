@@ -209,14 +209,11 @@ private:
 	}
 
 	void finish_query();
-	void abort_query(td::Status error);
 	bool reject_query(std::string error);
 	bool reject_query(std::string err_msg, td::Status error);
 	void start_up() override;
 
 	bool fatal_error(td::Status error);
-	bool fatal_error(int err_code, std::string err_msg);
-	bool fatal_error(int err_code, std::string err_msg, td::Status error);
 	bool fatal_error(std::string err_msg, int err_code = -666);
 
 	std::string error_ctx() const {

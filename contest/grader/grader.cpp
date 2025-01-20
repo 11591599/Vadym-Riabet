@@ -131,9 +131,11 @@ public:
 	void got_solution_result(td::Result<td::BufferSlice> res, bool valid, td::Ref<vm::Cell> original_merkle_update, double elapsed, double cpu_time) {
 		bool got_valid = res.is_ok();
 		if(got_valid != valid) {
-			printf("%*lu  %-*s %8.5f %8.5f  ERROR  expected %s, found %s\n", (int)test_idx_column_width_, test_idx_ + 1,
+			printf("%*lu  %-*s %8.5f %8.5f  ERROR  expected %s, found %s", (int)test_idx_column_width_, test_idx_ + 1,
 						 (int)test_name_column_width_, test_files_[test_idx_].c_str(), elapsed, cpu_time,
 						 (valid ? "VALID" : "INVALID"), (got_valid ? "VALID" : "INVALID"));
+			if(valid) printf("  %s", res.error().message().c_str());
+			printf("\n");
 			fflush(stdout);
 			++cnt_fail_;
 			++test_idx_;

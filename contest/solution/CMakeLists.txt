@@ -8,10 +8,10 @@ add_compile_options(
 )
 
 add_library(contest-solution STATIC
-	solution.hpp solution.cpp
-	contest-validate-query.cpp contest-validate-query.hpp
-	deserialize.hpp deserialize.cpp
-	profile.hpp profile.cpp)
+	solution.cpp
+	contest-validate-query.cpp
+	deserialize.cpp
+	profile.cpp)
 target_include_directories(contest-solution PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>)
 target_include_directories(contest-solution PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../validator>)
 target_link_libraries(contest-solution PRIVATE tdactor tdutils ton_block ton_validator validator ton_crypto)
