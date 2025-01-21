@@ -4969,7 +4969,6 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
  * @returns True if all transactions pass the check, False otherwise.
  */
 bool ContestValidateQuery::check_transactions() {
-	LOG(INFO) << "checking all transactions";
 	ns_.account_dict_ =
 			std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
 	//TODO: replace with check_for_each
