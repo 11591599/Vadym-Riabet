@@ -48,14 +48,45 @@ struct CellSliceInfo {
 
 struct CellWithUniquePtrStorage : public vm::DataCell {
 	using vm::DataCell::Info;
-	std::unique_ptr<char[]> storage_;
-	CellWithUniquePtrStorage(size_t storage_size, const Info &info):
-		vm::DataCell(info), storage_(std::make_unique<char[]>(storage_size)) {}
+	char* storage;
+	CellWithUniquePtrStorage(const Info &info):
+		vm::DataCell(info), storage(new char[info.get_storage_size()]) {}
 	~CellWithUniquePtrStorage() {
-		vm::DataCell::destroy_storage(get_storage());
+		vm::DataCell::destroy_storage(storage);
+		delete[] storage;
 	}
-	const char* get_storage() const { return storage_.get(); }
-	char* get_storage() { return storage_.get(); }
+	const char* get_storage() const { return storage; }
+	char* get_storage() { return storage; }
+
+	SpecialType special_type() const {
+		return info_.is_special_ ? SpecialType(*info_.get_data(storage)) : SpecialType::Ordinary;
+	}
+
+	inline uint32_t __get_hash_i(uint32_t level) const {
+		return LevelMask{info_.level_mask_ & (level - 1)}.get_hash_i();
+	}
+
+	const Hash do_get_hash(uint32_t level) const {
+		level = 1u << level;
+		if(info_.is_special_ && SpecialType(*info_.get_data(storage)) == SpecialType::PrunnedBranch) {
+			if(info_.level_mask_ >= level)
+				return reinterpret_cast<const Hash*>(info_.get_data(storage) + 2)[__get_hash_i(level)];
+			return info_.get_hashes(storage)[0];
+		}
+		return info_.get_hashes(storage)[__get_hash_i(level)];
+	}
+
+	uint16_t do_get_depth(uint32_t level) const {
+		level = 1u << level;
+		if(info_.is_special_ && SpecialType(*info_.get_data(storage)) == SpecialType::PrunnedBranch) {
+			if(info_.level_mask_ >= level) {
+				const uint8_t* const data = info_.get_data(storage) + 2 + hash_bytes * get_level_mask().get_hash_i() + __get_hash_i(level) * depth_bytes;
+				return uint16_t(data[0]<<8) | data[1];
+			}
+			return info_.get_depth(storage)[0];
+		}
+		return info_.get_depth(storage)[__get_hash_i(level)];
+	}
 };
 
 struct CellSerializationInfo {
@@ -121,15 +152,15 @@ struct CellSerializationInfo {
 		info.level_mask_ = (uint8_t)level_mask.get_mask();
 		info.hash_count_ = (uint8_t)hash_count;
 		info.virtualization_ = (uint8_t)virtualization;
-		auto data_cell = std::make_unique<CellWithUniquePtrStorage>(info.get_storage_size(), info);
-		char* storage = data_cell->get_storage();
+		CellWithUniquePtrStorage *data_cell = new CellWithUniquePtrStorage(info);
 		// init data
-		uint8_t* data_ptr = info.get_data(storage);
+		vm::Cell::Hash* hashes_ptr = (vm::Cell::Hash*) data_cell->get_storage();
+		vm::Cell** refs_ptr = (vm::Cell**) (hashes_ptr + hash_count);
+		uint16_t* depth_ptr = (uint16_t*) (refs_ptr + refs_cnt);
+		uint8_t* data_ptr = (uint8_t*) (depth_ptr + hash_count);
 		std::memcpy(data_ptr, data, data_len);
 		// init refs
-		vm::Cell** refs_ptr = info.get_refs(storage);
 		for(int i = 0; i < refs_cnt; ++i) refs_ptr[i] = refs[i].release();
-		vm::Cell::Hash* hashes_ptr = info.get_hashes(storage);
 		uint32_t hash_i_offset = level_mask.get_hashes_count() - hash_count;
 		uint8_t tmp[2];
 		tmp[1] = info.d2();
@@ -149,18 +180,18 @@ struct CellSerializationInfo {
 			else SHA256_Update(&sha_ctx, hashes_ptr[hash_i - hash_i_offset - 1].as_array().begin(), vm::Cell::hash_bytes);
 			const uint32_t level_i_ref = (type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate) ? level_i + 1 : level_i;
 			// calc depth
-			td::uint16 depth = 0;
+			uint16_t depth = 0;
+			uint8_t child_depth_buf[8];
 			for(int i = 0; i < info.refs_count_; i++) {
-				const td::uint16 child_depth = refs_ptr[i]->get_depth(level_i_ref);
-				// add depth into hash
-				td::uint8 child_depth_buf[vm::Cell::depth_bytes];
-				td::bitstring::bits_store_long(child_depth_buf, child_depth, vm::Cell::depth_bits);
-				SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes);
+				const uint16_t child_depth = refs_ptr[i]->get_depth(level_i_ref);
+				child_depth_buf[(i<<1)] = child_depth>>8;
+				child_depth_buf[(i<<1)+1] = (uint8_t) child_depth;
 				depth = std::max(depth, child_depth);
 			}
+			SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes * info.refs_count_);
 			if(info.refs_count_) ++depth;
 			const uint32_t dest_i = hash_i - hash_i_offset;
-			info.get_depth(storage)[dest_i] = depth;
+			depth_ptr[dest_i] = depth;
 			// children hash
 			for(int i = 0; i < info.refs_count_; i++)
 				SHA256_Update(&sha_ctx, refs_ptr[i]->get_hash(level_i_ref).as_array().begin(), vm::Cell::hash_bytes);
@@ -168,7 +199,7 @@ struct CellSerializationInfo {
 			#pragma GCC diagnostic pop
 			++hash_i;
 		}
-		return td::Ref<vm::DataCell>(data_cell.release(), td::Ref<vm::DataCell>::acquire_t{});
+		return td::Ref<vm::DataCell>(data_cell, td::Ref<vm::DataCell>::acquire_t{});
 	}
 };
 
