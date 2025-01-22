@@ -96,7 +96,6 @@ public:
 	void start() { start_up(); }
 
 private:
-	int verbosity{0};
 	int pending{0};
 	const ShardIdFull shard_;
 	const BlockIdExt id_;
@@ -111,7 +110,6 @@ private:
 	bool want_merge_{false};
 	bool is_key_block_{false};
 	bool prev_key_block_exists_{false};
-	bool debug_checks_{false};
 	BlockSeqno prev_key_seqno_{~0u};
 	int stage_{0};
 	td::BitArray<64> shard_pfx_;
@@ -129,11 +127,9 @@ private:
 	ton::BlockSeqno mc_seqno_{0};
 
 	Ref<vm::Cell> block_root_;
-	std::vector<Ref<vm::Cell>> collated_roots_;
 	std::map<RootHash, Ref<vm::Cell>> virt_roots_;
 	std::unique_ptr<vm::Dictionary> top_shard_descr_dict_;
 	block::gen::ExtraCollatedData::Record extra_collated_data_;
-	bool have_extra_collated_data_ = false;
 
 	Ref<vm::Cell> recover_create_msg_, mint_msg_;  // from McBlockExtra (UNCHECKED)
 
@@ -199,7 +195,6 @@ private:
 
 	bool msg_metadata_enabled_ = false;
 	bool deferring_messages_enabled_ = false;
-	bool store_out_msg_queue_size_ = false;
 
 	td::uint64 processed_account_dispatch_queues_ = 0;
 	bool have_unprocessed_account_dispatch_queue_ = false;
@@ -254,8 +249,6 @@ private:
 	bool check_this_shard_mc_info();
 	bool init_parse();
 	bool unpack_block_candidate();
-	bool extract_collated_data_from(Ref<vm::Cell> croot, int idx);
-	bool extract_collated_data();
 	bool try_validate();
 	bool compute_prev_state();
 	bool unpack_merge_prev_state();

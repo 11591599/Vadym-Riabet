@@ -48,13 +48,13 @@ struct CellSliceInfo {
 
 struct CellWithUniquePtrStorage : public vm::DataCell {
 	using vm::DataCell::Info;
+	constexpr static int STORAGE_SIZE = 228;
+	inline thread_local static std::vector<char> BIG_STORAGE;
+	inline thread_local static char* NEXT_STORAGE = nullptr;
 	char* storage;
-	CellWithUniquePtrStorage(const Info &info):
-		vm::DataCell(info), storage(new char[info.get_storage_size()]) {}
-	~CellWithUniquePtrStorage() {
-		vm::DataCell::destroy_storage(storage);
-		delete[] storage;
-	}
+	CellWithUniquePtrStorage(const Info &info, char* n_storage):
+		vm::DataCell(info), storage(NEXT_STORAGE) { NEXT_STORAGE = n_storage; }
+	~CellWithUniquePtrStorage() { vm::DataCell::destroy_storage(storage); }
 	const char* get_storage() const { return storage; }
 	char* get_storage() { return storage; }
 
@@ -115,29 +115,23 @@ struct CellSerializationInfo {
 	}
 
 	td::Ref<vm::Cell> create_data_cell(const uint8_t* cell_slice, const std::array<const vm::Cell*, 4> &refs) const {
-		PROFILER("create_data_cell");
 		const uint8_t* const data = cell_slice + data_offset;
 		const vm::Cell::SpecialType type = special ? static_cast<vm::Cell::SpecialType>(data[0])
 										: vm::Cell::SpecialType::Ordinary;
 		vm::Cell::LevelMask level_mask;
-		td::uint32 virtualization = 0;
 		switch(type) {
 		case vm::Cell::SpecialType::Ordinary:
-			for(int i = 0; i < refs_cnt; ++i) {
+			for(int i = 0; i < refs_cnt; ++i)
 				level_mask = level_mask.apply_or(refs[i]->get_level_mask());
-				virtualization = td::max(virtualization, refs[i]->get_virtualization());
-			}
 			break;
 		case vm::Cell::SpecialType::PrunnedBranch:
 			level_mask = vm::Cell::LevelMask(data[1]);
 			break;
 		case vm::Cell::SpecialType::MerkleProof:
 			level_mask = refs[0]->get_level_mask().shift_right();
-			virtualization = refs[0]->get_virtualization();
 			break;
 		case vm::Cell::SpecialType::MerkleUpdate:
 			level_mask = refs[0]->get_level_mask().apply_or(refs[1]->get_level_mask()).shift_right();
-			virtualization = td::max(refs[0]->get_virtualization(), refs[1]->get_virtualization());
 			break;
 		default:
 			break;
@@ -153,18 +147,18 @@ struct CellSerializationInfo {
 		CellWithUniquePtrStorage::Info info;
 		info.bits_ = data_len * 8;
 		if(data_with_bits) info.bits_ -= 1 + td::count_trailing_zeroes32(data[data_len - 1]);
-		info.refs_count_ = (uint8_t)refs_cnt;
+		info.refs_count_ = refs_cnt & 0b111;
 		info.is_special_ = special;
-		info.level_mask_ = (uint8_t)level_mask.get_mask();
-		info.hash_count_ = (uint8_t)hash_count;
-		info.virtualization_ = (uint8_t)virtualization;
-		CellWithUniquePtrStorage *data_cell = new CellWithUniquePtrStorage(info);
+		info.level_mask_ = level_mask.get_mask() & 0b111;
+		info.hash_count_ = hash_count & 0b111;
+		info.virtualization_ = 0;
 		// init data
-		vm::Cell::Hash* hashes_ptr = (vm::Cell::Hash*) data_cell->get_storage();
+		vm::Cell::Hash* hashes_ptr = (vm::Cell::Hash*) CellWithUniquePtrStorage::NEXT_STORAGE;
 		const vm::Cell** refs_ptr = (const vm::Cell**) (hashes_ptr + hash_count);
 		uint16_t* depth_ptr = (uint16_t*) (refs_ptr + refs_cnt);
 		uint8_t* data_ptr = (uint8_t*) (depth_ptr + hash_count);
 		std::memcpy(data_ptr, data, data_len);
+		CellWithUniquePtrStorage *data_cell = new CellWithUniquePtrStorage(info, (char*) data_ptr + data_len);
 		// init refs
 		for(int i = 0; i < refs_cnt; ++i) {
 			refs_ptr[i] = refs[i];
@@ -192,7 +186,7 @@ struct CellSerializationInfo {
 			uint8_t child_depth_buf[8];
 			for(int i = 0; i < refs_cnt; i++) {
 				const uint16_t child_depth = refs_ptr[i]->get_depth(level_i_ref);
-				child_depth_buf[(i<<1)] = child_depth>>8;
+				child_depth_buf[(i<<1)] = (uint8_t) (child_depth>>8);
 				child_depth_buf[(i<<1)+1] = (uint8_t) child_depth;
 				depth = std::max(depth, child_depth);
 			}
@@ -229,6 +223,9 @@ std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
 		}
 	}
 
+	if(const size_t desired_size = CellWithUniquePtrStorage::STORAGE_SIZE * info.cell_count; CellWithUniquePtrStorage::BIG_STORAGE.size() < desired_size)
+		CellWithUniquePtrStorage::BIG_STORAGE.resize(desired_size);
+	CellWithUniquePtrStorage::NEXT_STORAGE = CellWithUniquePtrStorage::BIG_STORAGE.data();
 	std::vector<td::Ref<vm::Cell>> cell_list(info.cell_count);
 	const auto get_idx_entry = [&](int index)->uint64_t {
 		uint64_t raw;

@@ -158,56 +158,44 @@ void ContestValidateQuery::start_up() {
 		reject_query("cannot have more than two previous blocks");
 		return;
 	}
-	if (!prev_blocks.size()) {
+	if(!prev_blocks.size()) {
 		reject_query("must have one or two previous blocks to generate a next block");
 		return;
 	}
-	if (prev_blocks.size() == 2) {
-		if (!(shard_is_parent(shard_, ShardIdFull(prev_blocks[0])) &&
-					shard_is_parent(shard_, ShardIdFull(prev_blocks[1])) && prev_blocks[0].id.shard < prev_blocks[1].id.shard)) {
-			reject_query(
-					"the two previous blocks for a merge operation are not siblings or are not children of current shard");
+	if(prev_blocks.size() == 2) {
+		if(!(shard_is_parent(shard_, ShardIdFull(prev_blocks[0])) && shard_is_parent(shard_, ShardIdFull(prev_blocks[1])) && prev_blocks[0].id.shard < prev_blocks[1].id.shard)) {
+			reject_query("the two previous blocks for a merge operation are not siblings or are not children of current shard");
 			return;
 		}
-		for (const auto& blk : prev_blocks) {
-			if (!blk.id.seqno) {
+		for(const auto& blk : prev_blocks) {
+			if(!blk.id.seqno) {
 				reject_query("previous blocks for a block merge operation must have non-zero seqno");
 				return;
 			}
 		}
-		// reject_query("merging shards is not implemented yet");
-		// return;
 	} else {
-		CHECK(prev_blocks.size() == 1);
 		// creating next block
-		if (!ShardIdFull(prev_blocks[0]).is_valid_ext()) {
+		if(!ShardIdFull(prev_blocks[0]).is_valid_ext()) {
 			reject_query("previous block does not have a valid id");
 			return;
 		}
-		if (ShardIdFull(prev_blocks[0]) != shard_) {
-			if (!shard_is_parent(ShardIdFull(prev_blocks[0]), shard_)) {
+		if(ShardIdFull(prev_blocks[0]) != shard_) {
+			if(!shard_is_parent(ShardIdFull(prev_blocks[0]), shard_)) {
 				reject_query("previous block does not belong to the shard we are generating a new block for");
 				return;
 			}
 		}
-		if (after_split_) {
-			// reject_query("splitting shards not implemented yet");
-			// return;
-		}
 	}
 	// 4. load state(s) corresponding to previous block(s)
 	prev_states.resize(prev_blocks.size());
-	for (int i = 0; (unsigned)i < prev_blocks.size(); i++) {
+	for(int i = 0; (unsigned)i < prev_blocks.size(); i++) {
 		// 4.1. load state
-		LOG(DEBUG) << "sending wait_block_state() query #" << i << " for " << prev_blocks[i].to_str() << " to Manager";
 		++pending;
 		td::actor::send_closure_later(actor_id(this), &ContestValidateQuery::after_get_shard_state, i, fetch_block_state(prev_blocks[i]));
 	}
 	// 5. request masterchain state referred to in the block
 	++pending;
 	td::actor::send_closure_later(actor_id(this), &ContestValidateQuery::after_get_mc_state, fetch_block_state(mc_blkid_));
-	// ...
-	CHECK(pending);
 }
 
 /**
@@ -242,9 +230,38 @@ bool ContestValidateQuery::unpack_block_candidate() {
 	}
 	// ...
 	// 8. deserialize collated data
-	collated_roots_ = deserialize(collated_data);
+	std::vector<Ref<vm::Cell>> collated_roots_ = deserialize(collated_data);
 	// 9. extract/classify collated data
-	return extract_collated_data();
+	bool have_extra_collated_data = false;
+	for(auto croot : collated_roots_) {
+		try {
+			bool is_special = false;
+			vm::CellSlice cs = vm::load_cell_slice_special(croot, is_special);
+			if(!cs.is_valid()) return reject_query("cannot load root cell");
+			if(is_special) {
+				if(cs.special_type() != vm::Cell::SpecialType::MerkleProof)
+					return reject_query("it is a special cell, but not a Merkle proof root");
+				auto virt_root = vm::MerkleProof::virtualize(croot, 1);
+				if(virt_root.is_null()) return reject_query("invalid Merkle proof");
+				RootHash virt_hash{virt_root->get_hash().bits()};
+				auto ins = virt_roots_.emplace(virt_hash, std::move(virt_root));
+				if(!ins.second) return reject_query("Merkle proof with duplicate virtual root hash "s + virt_hash.to_hex());
+			} else if(block::gen::t_TopBlockDescrSet.has_valid_tag(cs)) {
+				if(!block::gen::t_TopBlockDescrSet.validate_upto(10000, cs)) return reject_query("invalid TopBlockDescrSet");
+				if(top_shard_descr_dict_) return reject_query("duplicate TopBlockDescrSet in collated data");
+				top_shard_descr_dict_ = std::make_unique<vm::Dictionary>(cs.prefetch_ref(), 96);
+			} else if(block::gen::t_ExtraCollatedData.has_valid_tag(cs)) {
+				if(!block::gen::unpack(cs, extra_collated_data_)) return reject_query("invalid ExtraCollatedData");
+				have_extra_collated_data = true;
+			}
+		} catch (vm::VmError& err) {
+			return reject_query(PSTRING() << "vm error " << err.get_msg());
+		} catch (vm::VmVirtError& err) {
+			return reject_query(PSTRING() << "virtualization error " << err.get_msg());
+		}
+	}
+	if(!have_extra_collated_data) return reject_query("no extra collated data");
+	return true;
 }
 
 /**
@@ -330,92 +347,12 @@ bool ContestValidateQuery::init_parse() {
 }
 
 /**
- * Extracts collated data from a cell.
- *
- * @param croot The root cell containing the collated data.
- * @param idx The index of the root.
- *
- * @returns True if the extraction is successful, false otherwise.
- */
-bool ContestValidateQuery::extract_collated_data_from(Ref<vm::Cell> croot, int idx) {
-	bool is_special = false;
-	auto cs = vm::load_cell_slice_special(croot, is_special);
-	if (!cs.is_valid()) {
-		return reject_query("cannot load root cell");
-	}
-	if (is_special) {
-		if (cs.special_type() != vm::Cell::SpecialType::MerkleProof) {
-			return reject_query("it is a special cell, but not a Merkle proof root");
-		}
-		auto virt_root = vm::MerkleProof::virtualize(croot, 1);
-		if (virt_root.is_null()) {
-			return reject_query("invalid Merkle proof");
-		}
-		RootHash virt_hash{virt_root->get_hash().bits()};
-		LOG(DEBUG) << "collated datum # " << idx << " is a Merkle proof with root hash " << virt_hash.to_hex();
-		auto ins = virt_roots_.emplace(virt_hash, std::move(virt_root));
-		if (!ins.second) {
-			return reject_query("Merkle proof with duplicate virtual root hash "s + virt_hash.to_hex());
-		}
-		return true;
-	}
-	if (block::gen::t_TopBlockDescrSet.has_valid_tag(cs)) {
-		LOG(DEBUG) << "collated datum # " << idx << " is a TopBlockDescrSet";
-		if (!block::gen::t_TopBlockDescrSet.validate_upto(10000, cs)) {
-			return reject_query("invalid TopBlockDescrSet");
-		}
-		if (top_shard_descr_dict_) {
-			return reject_query("duplicate TopBlockDescrSet in collated data");
-		}
-		top_shard_descr_dict_ = std::make_unique<vm::Dictionary>(cs.prefetch_ref(), 96);
-		return true;
-	}
-	if (block::gen::t_ExtraCollatedData.has_valid_tag(cs)) {
-		LOG(DEBUG) << "collated datum # " << idx << " is an ExtraCollatedData";
-		if (!block::gen::unpack(cs, extra_collated_data_)) {
-			return reject_query("invalid ExtraCollatedData");
-		}
-		have_extra_collated_data_ = true;
-		return true;
-	}
-	LOG(INFO) << "collated datum # " << idx << " has unknown type (magic " << cs.prefetch_ulong(32) << "), ignoring";
-	return true;
-}
-
-/**
- * Extracts collated data from a list of collated roots.
- *
- * @returns True if the extraction is successful, False otherwise.
- */
-bool ContestValidateQuery::extract_collated_data() {
-	int i = -1;
-	for (auto croot : collated_roots_) {
-		++i;
-		auto guard = error_ctx_add_guard(PSTRING() << "collated datum #" << i);
-		try {
-			if (!extract_collated_data_from(croot, i)) {
-				return reject_query("cannot unpack collated datum");
-			}
-		} catch (vm::VmError& err) {
-			return reject_query(PSTRING() << "vm error " << err.get_msg());
-		} catch (vm::VmVirtError& err) {
-			return reject_query(PSTRING() << "virtualization error " << err.get_msg());
-		}
-	}
-	if (!have_extra_collated_data_) {
-		return reject_query("no extra collated data");
-	}
-	return true;
-}
-
-/**
  * Callback function called after retrieving the masterchain state referenced int the block.
  *
  * @param res The result of the masterchain state retrieval.
  */
 void ContestValidateQuery::after_get_mc_state(td::Result<Ref<ShardState>> res) {
 	PROFILER("after_mc");
-	LOG(INFO) << "in ContestValidateQuery::after_get_mc_state() for " << mc_blkid_.to_str();
 	--pending;
 	if (res.is_error()) {
 		fatal_error(res.move_as_error());
@@ -425,11 +362,7 @@ void ContestValidateQuery::after_get_mc_state(td::Result<Ref<ShardState>> res) {
 		fatal_error("cannot process masterchain state for "s + mc_blkid_.to_str());
 		return;
 	}
-	if (!pending) {
-		if (!try_validate()) {
-			fatal_error("cannot validate new block");
-		}
-	}
+	if(!pending && !try_validate()) fatal_error("cannot validate new block");
 }
 
 /**
@@ -439,24 +372,17 @@ void ContestValidateQuery::after_get_mc_state(td::Result<Ref<ShardState>> res) {
  * @param res The result of the shard state retrieval.
  */
 void ContestValidateQuery::after_get_shard_state(int idx, td::Result<Ref<ShardState>> res) {
-	PROFILER("after_shard");
-	LOG(INFO) << "in ContestValidateQuery::after_get_shard_state(" << idx << ")";
 	--pending;
-	if (res.is_error()) {
+	if(res.is_error()) {
 		fatal_error(res.move_as_error());
 		return;
 	}
 	// got state of previous block #i
-	CHECK((unsigned)idx < prev_blocks.size());
+	// idx < prev_blocks.size()
 	prev_states.at(idx) = res.move_as_ok();
-	CHECK(prev_states[idx].not_null());
-	CHECK(prev_states[idx]->get_shard() == ShardIdFull(prev_blocks[idx]));
-	CHECK(prev_states[idx]->root_cell().not_null());
-	if (!pending) {
-		if (!try_validate()) {
-			fatal_error("cannot validate new block");
-		}
-	}
+	// prev_states[idx]->get_shard() == ShardIdFull(prev_blocks[idx])
+	// prev_states[idx]->root_cell().not_null()
+	if(!pending && !try_validate()) fatal_error("cannot validate new block");
 }
 
 /**
@@ -493,7 +419,6 @@ bool ContestValidateQuery::process_mc_state(Ref<MasterchainState> mc_state) {
  * @returns True if the unpacking and checks are successful, false otherwise.
  */
 bool ContestValidateQuery::try_unpack_mc_state() {
-	LOG(DEBUG) << "unpacking reference masterchain state";
 	auto guard = error_ctx_add_guard("unpack last mc state");
 	try {
 		if (mc_state_.is_null()) {
@@ -511,7 +436,6 @@ bool ContestValidateQuery::try_unpack_mc_state() {
 		if(res.is_error())
 			return fatal_error("cannot extract configuration from reference masterchain state "s + mc_blkid_.to_str() + " : " + res.move_as_error().to_string());
 		config_ = res.move_as_ok();
-		CHECK(config_);
 		config_->set_block_id_ext(mc_blkid_);
 		ihr_enabled_ = config_->ihr_enabled();
 		create_stats_enabled_ = config_->create_stats_enabled();
@@ -561,7 +485,6 @@ bool ContestValidateQuery::try_unpack_mc_state() {
 		if (!check_this_shard_mc_info()) {
 			return fatal_error("masterchain configuration does not admit creating block "s + id_.to_str());
 		}
-		store_out_msg_queue_size_ = config_->has_capability(ton::capStoreOutMsgQueueSize);
 		msg_metadata_enabled_ = config_->has_capability(ton::capMsgMetadata);
 		deferring_messages_enabled_ = config_->has_capability(ton::capDeferMessages);
 	} catch (vm::VmError& err) {
@@ -587,10 +510,7 @@ bool ContestValidateQuery::fetch_config_params() {
 		}
 		storage_prices_ = res.move_as_ok();
 	}
-	{
-		// recover (not generate) rand seed from block header
-		CHECK(!rand_seed_.is_zero());
-	}
+	// rand_seed not null
 	block::SizeLimitsConfig size_limits;
 	{
 		auto res = config_->get_size_limits_config();
@@ -885,16 +805,12 @@ bool ContestValidateQuery::check_this_shard_mc_info() {
  * @returns True if the previous state is computed successfully, false otherwise.
  */
 bool ContestValidateQuery::compute_prev_state() {
-	CHECK(prev_states.size() == 1u + after_merge_);
-
+	// prev_states.size() == 1u + after_merge_
 	prev_state_root_ = prev_states[0]->root_cell();
-	CHECK(prev_state_root_.not_null());
-	if (after_merge_) {
+	if(after_merge_) {
 		Ref<vm::Cell> aux_root = prev_states[1]->root_cell();
-		if (!block::gen::t_ShardState.cell_pack_split_state(prev_state_root_, prev_states[0]->root_cell(),
-																												prev_states[1]->root_cell())) {
+		if(!block::gen::t_ShardState.cell_pack_split_state(prev_state_root_, prev_states[0]->root_cell(), prev_states[1]->root_cell()))
 			return fatal_error("cannot construct mechanically merged previously state", -667);
-		}
 	}
 	state_usage_tree_ = std::make_shared<vm::CellUsageTree>();
 	prev_state_root_ = vm::UsageCell::create(prev_state_root_, state_usage_tree_->root_ptr());
@@ -909,8 +825,7 @@ bool ContestValidateQuery::compute_prev_state() {
  * @returns True if the unpacking and merging was successful, false otherwise.
  */
 bool ContestValidateQuery::unpack_merge_prev_state() {
-	LOG(DEBUG) << "unpack/merge previous states";
-	CHECK(prev_states.size() == 2);
+	// prev_states.size() = 2
 	// 2. extract the two previous states
 	Ref<vm::Cell> root0, root1;
 	if (!block::gen::t_ShardState.cell_unpack_split_state(prev_state_root_, root0, root1)) {
@@ -943,16 +858,11 @@ bool ContestValidateQuery::unpack_merge_prev_state() {
  * @returns True if the unpacking is successful, false otherwise.
  */
 bool ContestValidateQuery::unpack_prev_state() {
-	LOG(DEBUG) << "unpacking previous state(s)";
-	CHECK(prev_state_root_.not_null());
-	if (after_merge_) {
-		if (!unpack_merge_prev_state()) {
-			return fatal_error("unable to unpack/merge previous states immediately after a merge");
-		}
+	if(after_merge_) {
+		if(!unpack_merge_prev_state()) return fatal_error("unable to unpack/merge previous states immediately after a merge");
 		return true;
 	}
-	CHECK(prev_states.size() == 1);
-	// unpack previous state
+	// prev_states.size() = 1
 	return unpack_one_prev_state(ps_, prev_blocks.at(0), prev_state_root_) && (!after_split_ || split_prev_state(ps_));
 }
 
@@ -993,11 +903,10 @@ bool ContestValidateQuery::unpack_one_prev_state(block::ShardState& ss, BlockIdE
  * @returns True if the split operation is successful, false otherwise.
  */
 bool ContestValidateQuery::split_prev_state(block::ShardState& ss) {
-	LOG(INFO) << "Splitting previous state " << ss.id_.to_str() << " to subshard " << shard_.to_str();
-	CHECK(after_split_);
+	// after_split_ = true
 	auto sib_shard = ton::shard_sibling(shard_);
 	auto res1 = ss.compute_split_out_msg_queue(sib_shard);
-	if (res1.is_error()) {
+	if(res1.is_error()) {
 		return fatal_error(res1.move_as_error());
 	}
 	sibling_out_msg_queue_ = res1.move_as_ok();
@@ -1035,9 +944,7 @@ bool ContestValidateQuery::init_next_state() {
  * @returns True if the request for neighbor message queues was successful, false otherwise.
  */
 bool ContestValidateQuery::request_neighbor_queues() {
-	CHECK(new_shard_conf_);
 	auto neighbor_list = new_shard_conf_->get_neighbor_shard_hash_ids(shard_);
-	LOG(DEBUG) << "got a preliminary list of " << neighbor_list.size() << " neighbors for " << shard_.to_str();
 	for (ton::BlockId blk_id : neighbor_list) {
 		if (blk_id.seqno == 0 && blk_id.shard_full() != shard_) {
 			continue;
@@ -1100,20 +1007,9 @@ void ContestValidateQuery::got_neighbor_out_queue(int i, td::Result<Ref<MessageQ
 		return;
 	}
 	descr.set_queue_root(qinfo.out_queue->prefetch_ref(0));
-	// TODO: comment the next two lines in the future when the output queues become huge
-	// (do this carefully)
-	if (debug_checks_) {
-		CHECK(block::gen::t_OutMsgQueueInfo.validate_ref(1000000, outq_descr->root_cell()));
-		CHECK(block::tlb::t_OutMsgQueueInfo.validate_ref(1000000, outq_descr->root_cell()));
-	}
 	// unpack ProcessedUpto
-	LOG(DEBUG) << "unpacking ProcessedUpto of neighbor " << descr.blk_.to_str();
-	if (verbosity >= 2) {
-		block::gen::t_ProcessedInfo.print(std::cerr, qinfo.proc_info);
-		qinfo.proc_info->print_rec(std::cerr);
-	}
 	descr.processed_upto = block::MsgProcessedUptoCollection::unpack(descr.shard(), qinfo.proc_info);
-	if (!descr.processed_upto) {
+	if(!descr.processed_upto) {
 		fatal_error("cannot unpack ProcessedUpto in neighbor output queue info for neighbor "s + descr.blk_.to_str());
 		return;
 	}
@@ -1123,17 +1019,12 @@ void ContestValidateQuery::got_neighbor_out_queue(int i, td::Result<Ref<MessageQ
 		// TODO: perform this only if there are messages for this shard in our output queue
 		// .. (have to check the above condition and perform a `break` here) ..
 		// ..
-		for (const auto& entry : descr.processed_upto->list) {
+		for(const auto& entry : descr.processed_upto->list) {
 			Ref<MasterchainStateQ> state;
-			if (!request_aux_mc_state(entry.mc_seqno, state)) {
-				return;
-			}
+			if(!request_aux_mc_state(entry.mc_seqno, state)) return;
 		}
-	} while (false);
-	if (!pending) {
-		LOG(INFO) << "all neighbor output queues fetched";
-		try_validate();
-	}
+	} while(false);
+	if(!pending) try_validate();
 }
 
 /**
@@ -1197,11 +1088,10 @@ bool ContestValidateQuery::request_aux_mc_state(BlockSeqno seqno, Ref<Masterchai
 		return fatal_error(PSTRING() << "cannot find masterchain block with seqno " << seqno
 																 << " to load corresponding state as required");
 	}
-	CHECK(blkid.is_valid_ext() && blkid.is_masterchain());
-	LOG(DEBUG) << "sending auxiliary wait_block_state() query for " << blkid.to_str() << " to Manager";
+	// blkid.is_valid_ext()
+	// blkid.is_masterchain()
 	++pending;
-	td::actor::send_closure_later(actor_id(this), &ContestValidateQuery::after_get_aux_shard_state, blkid,
-																fetch_block_state(blkid));
+	td::actor::send_closure_later(actor_id(this), &ContestValidateQuery::after_get_aux_shard_state, blkid, fetch_block_state(blkid));
 	state.clear();
 	return true;
 }
@@ -1232,7 +1122,6 @@ Ref<MasterchainStateQ> ContestValidateQuery::get_aux_mc_state(BlockSeqno seqno) 
  * @param res The result of retrieving the shard state.
  */
 void ContestValidateQuery::after_get_aux_shard_state(ton::BlockIdExt blkid, td::Result<Ref<ShardState>> res) {
-	PROFILER("after_aux_shard");
 	--pending;
 	if(res.is_error()) {
 		fatal_error("cannot load auxiliary masterchain state for "s + blkid.to_str() + " : " + res.move_as_error().to_string());
@@ -1307,9 +1196,6 @@ bool ContestValidateQuery::prepare_out_msg_queue_size() {
 		old_out_msg_queue_size_ = 0;
 		out_msg_queue_size_known_ = true;
 		have_out_msg_queue_size_in_state_ = true;
-		return true;
-	}
-	if (!store_out_msg_queue_size_) {  // Don't need it
 		return true;
 	}
 	old_out_msg_queue_size_ = 0;
@@ -1392,7 +1278,6 @@ bool ContestValidateQuery::fix_processed_upto(block::MsgProcessedUptoCollection&
  * @returns True if all processed_upto values were successfully adjusted, false otherwise.
  */
 bool ContestValidateQuery::fix_all_processed_upto() {
-	CHECK(ps_.processed_upto_);
 	if (!fix_processed_upto(*ps_.processed_upto_)) {
 		return fatal_error("Cannot adjust old ProcessedUpto of our shard state");
 	}
@@ -1402,12 +1287,8 @@ bool ContestValidateQuery::fix_all_processed_upto() {
 	if (!fix_processed_upto(*ns_.processed_upto_)) {
 		return fatal_error("Cannot adjust new ProcessedUpto of our shard state");
 	}
-	for (auto& descr : neighbors_) {
-		CHECK(descr.processed_upto);
-		if (!fix_processed_upto(*descr.processed_upto)) {
-			return fatal_error("Cannot adjust ProcessedUpto of neighbor "s + descr.blk_.to_str());
-		}
-	}
+	for(auto& descr : neighbors_) if(!fix_processed_upto(*descr.processed_upto))
+		return fatal_error("Cannot adjust ProcessedUpto of neighbor "s + descr.blk_.to_str());
 	return true;
 }
 
@@ -1419,18 +1300,15 @@ bool ContestValidateQuery::fix_all_processed_upto() {
  * @returns True if the operation is successful, false otherwise.
  */
 bool ContestValidateQuery::add_trivial_neighbor_after_merge() {
-	LOG(DEBUG) << "in add_trivial_neighbor_after_merge()";
-	CHECK(prev_blocks.size() == 2);
+	// prev_blocks.size() = 2
 	int found = 0;
 	std::size_t n = neighbors_.size();
-	for (std::size_t i = 0; i < n; i++) {
+	for(std::size_t i = 0; i < n; i++) {
 		auto& nb = neighbors_.at(i);
 		if (ton::shard_intersects(nb.shard(), shard_)) {
 			++found;
-			LOG(DEBUG) << "neighbor #" << i << " : " << nb.blk_.to_str() << " intersects our shard " << shard_.to_str();
-			if (!ton::shard_is_parent(shard_, nb.shard()) || found > 2) {
+			if(!ton::shard_is_parent(shard_, nb.shard()) || found > 2)
 				return fatal_error("impossible shard configuration in add_trivial_neighbor_after_merge()");
-			}
 			auto prev_shard = prev_blocks.at(found - 1).shard_full();
 			if (nb.shard() != prev_shard) {
 				return fatal_error("neighbor shard "s + nb.shard().to_str() + " does not match that of our ancestor " +
@@ -1448,7 +1326,7 @@ bool ContestValidateQuery::add_trivial_neighbor_after_merge() {
 			}
 		}
 	}
-	CHECK(found == 2);
+	// found = 2
 	return true;
 }
 
@@ -1460,24 +1338,21 @@ bool ContestValidateQuery::add_trivial_neighbor_after_merge() {
  * @returns True if the operation is successful, false otherwise.
  */
 bool ContestValidateQuery::add_trivial_neighbor() {
-	LOG(DEBUG) << "in add_trivial_neighbor()";
 	if (after_merge_) {
 		return add_trivial_neighbor_after_merge();
 	}
-	CHECK(prev_blocks.size() == 1);
+	// prev_blocks.size() = 1
 	if (!prev_blocks[0].seqno()) {
 		// skipping
 		LOG(DEBUG) << "no trivial neighbor because previous block has zero seqno";
 		return true;
 	}
-	CHECK(prev_state_root_.not_null());
 	auto descr_ref = block::McShardDescr::from_state(prev_blocks[0], prev_state_root_);
 	if (descr_ref.is_null()) {
 		return reject_query("cannot deserialize header of previous state");
 	}
-	CHECK(descr_ref.not_null());
-	CHECK(descr_ref->blk_ == prev_blocks[0]);
-	CHECK(ps_.out_msg_queue_);
+	// descr_ref->blk_ = prev_blocks[0]
+	// ps_.out_msg_queue_ not null
 	ton::ShardIdFull prev_shard = descr_ref->shard();
 	// Possible cases are:
 	// 1. prev_shard = shard = one of neighbors
@@ -1499,7 +1374,6 @@ bool ContestValidateQuery::add_trivial_neighbor() {
 		auto& nb = neighbors_.at(i);
 		if (ton::shard_intersects(nb.shard(), shard_)) {
 			++found;
-			LOG(DEBUG) << "neighbor #" << i << " : " << nb.blk_.to_str() << " intersects our shard " << shard_.to_str();
 			if (nb.shard() == prev_shard) {
 				if (prev_shard == shard_) {
 					// case 1. Normal.
@@ -1589,8 +1463,8 @@ bool ContestValidateQuery::add_trivial_neighbor() {
 			}
 		}
 	}
-	CHECK(found && cs);
-	CHECK(found == (1 + (cs == 4)));
+	// found && cs
+	// found = 1 + (cs == 4)
 	return true;
 }
 
@@ -1600,41 +1474,22 @@ bool ContestValidateQuery::add_trivial_neighbor() {
  * @returns True if the block data is successfully unpacked and passes all validation checks, false otherwise.
  */
 bool ContestValidateQuery::unpack_block_data() {
-	LOG(DEBUG) << "unpacking block structures";
 	block::gen::Block::Record blk;
 	block::gen::BlockExtra::Record extra;
-	if (!(tlb::unpack_cell(block_root_, blk) && tlb::unpack_cell(blk.extra, extra))) {
-		return reject_query("cannot unpack Block header");
-	}
+	if(!(tlb::unpack_cell(block_root_, blk) && tlb::unpack_cell(blk.extra, extra))) return reject_query("cannot unpack Block header");
 	auto inmsg_cs = vm::load_cell_slice_ref(std::move(extra.in_msg_descr));
 	auto outmsg_cs = vm::load_cell_slice_ref(std::move(extra.out_msg_descr));
 	// run some hand-written checks from block::tlb::
 	// (automatic tests from block::gen:: have been already run for the entire block)
-	if (!block::tlb::t_InMsgDescr.validate_upto(10000000, *inmsg_cs)) {
-		return reject_query("InMsgDescr of the new block failed to pass handwritten validity tests");
-	}
-	if (!block::tlb::t_OutMsgDescr.validate_upto(10000000, *outmsg_cs)) {
-		return reject_query("OutMsgDescr of the new block failed to pass handwritten validity tests");
-	}
-	if (!block::tlb::t_ShardAccountBlocks.validate_ref(10000000, extra.account_blocks)) {
-		return reject_query("ShardAccountBlocks of the new block failed to pass handwritten validity tests");
-	}
+	if(!block::tlb::t_InMsgDescr.validate_upto(10000000, *inmsg_cs)) return reject_query("InMsgDescr of the new block failed to pass handwritten validity tests");
+	if(!block::tlb::t_OutMsgDescr.validate_upto(10000000, *outmsg_cs)) return reject_query("OutMsgDescr of the new block failed to pass handwritten validity tests");
+	if(!block::tlb::t_ShardAccountBlocks.validate_ref(10000000, extra.account_blocks)) return reject_query("ShardAccountBlocks of the new block failed to pass handwritten validity tests");
 	in_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(inmsg_cs), 256, block::tlb::aug_InMsgDescr);
 	out_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(outmsg_cs), 256, block::tlb::aug_OutMsgDescr);
-	account_blocks_dict_ = std::make_unique<vm::AugmentedDictionary>(
-			vm::load_cell_slice_ref(std::move(extra.account_blocks)), 256, block::tlb::aug_ShardAccountBlocks);
-	LOG(DEBUG) << "validating InMsgDescr";
-	if (!in_msg_dict_->validate_all()) {
-		return reject_query("InMsgDescr dictionary is invalid");
-	}
-	LOG(DEBUG) << "validating OutMsgDescr";
-	if (!out_msg_dict_->validate_all()) {
-		return reject_query("OutMsgDescr dictionary is invalid");
-	}
-	LOG(DEBUG) << "validating ShardAccountBlocks";
-	if (!account_blocks_dict_->validate_all()) {
-		return reject_query("ShardAccountBlocks dictionary is invalid");
-	}
+	account_blocks_dict_ = std::make_unique<vm::AugmentedDictionary>(vm::load_cell_slice_ref(std::move(extra.account_blocks)), 256, block::tlb::aug_ShardAccountBlocks);
+	if(!in_msg_dict_->validate_all()) return reject_query("InMsgDescr dictionary is invalid");
+	if(!out_msg_dict_->validate_all()) return reject_query("OutMsgDescr dictionary is invalid");
+	if(!account_blocks_dict_->validate_all()) return reject_query("ShardAccountBlocks dictionary is invalid");
 	return unpack_precheck_value_flow(std::move(blk.value_flow));
 }
 
@@ -1795,22 +1650,18 @@ bool ContestValidateQuery::postcheck_one_account_update(td::ConstBitPtr acc_id, 
  * @returns True if the pre-check is successful, False otherwise.
  */
 bool ContestValidateQuery::postcheck_account_updates() {
-	LOG(INFO) << "pre-checking all Account updates between the old and the new state";
 	try {
-		CHECK(ps_.account_dict_ && ns_.account_dict_);
-		if (!ps_.account_dict_->scan_diff(
+		if(!ps_.account_dict_->scan_diff(
 						*ns_.account_dict_,
 						[this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra,
 									 Ref<vm::CellSlice> new_val_extra) {
-							CHECK(key_len == 256);
 							return postcheck_one_account_update(key, std::move(old_val_extra), std::move(new_val_extra));
 						},
 						2 /* check augmentation of changed nodes in the new dict */)) {
 			return reject_query("invalid ShardAccounts dictionary in the new state");
 		}
-	} catch (vm::VmError& err) {
-		return reject_query("invalid ShardAccount dictionary difference between the old and the new state: "s +
-												err.get_msg());
+	} catch(vm::VmError& err) {
+		return reject_query("invalid ShardAccount dictionary difference between the old and the new state: "s + err.get_msg());
 	}
 	return true;
 }
@@ -1829,20 +1680,16 @@ bool ContestValidateQuery::postcheck_account_updates() {
  * @returns True if the transaction passes pre-checks, false otherwise.
  */
 bool ContestValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton::LogicalTime trans_lt,
-																										Ref<vm::CellSlice> trans_csr, ton::Bits256& prev_trans_hash,
-																										ton::LogicalTime& prev_trans_lt, unsigned& prev_trans_lt_len,
-																										ton::Bits256& acc_state_hash) {
-	LOG(DEBUG) << "checking Transaction " << trans_lt;
-	if (trans_csr.is_null() || trans_csr->size_ext() != 0x10000) {
+													Ref<vm::CellSlice> trans_csr, ton::Bits256& prev_trans_hash,
+													ton::LogicalTime& prev_trans_lt, unsigned& prev_trans_lt_len,
+													ton::Bits256& acc_state_hash) {
+	if(trans_csr.is_null() || trans_csr->size_ext() != 0x10000)
 		return reject_query(PSTRING() << "transaction " << trans_lt << " of " << acc_id.to_hex(256) << " is invalid");
-	}
 	auto trans_root = trans_csr->prefetch_ref();
 	block::gen::Transaction::Record trans;
 	block::gen::HASH_UPDATE::Record hash_upd;
-	if (!(tlb::unpack_cell(trans_root, trans) &&
-				tlb::type_unpack_cell(std::move(trans.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd))) {
+	if(!(tlb::unpack_cell(trans_root, trans) && tlb::type_unpack_cell(std::move(trans.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd)))
 		return reject_query(PSTRING() << "cannot unpack transaction " << trans_lt << " of " << acc_id.to_hex(256));
-	}
 	if (trans.account_addr != acc_id || trans.lt != trans_lt) {
 		return reject_query(PSTRING() << "transaction " << trans_lt << " of " << acc_id.to_hex(256)
 																	<< " claims to be transaction " << trans.lt << " of " << trans.account_addr.to_hex());
@@ -1979,7 +1826,6 @@ bool ContestValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Re
  * @returns True if the pre-checking is successful, otherwise false.
  */
 bool ContestValidateQuery::precheck_account_transactions() {
-	LOG(INFO) << "pre-checking all AccountBlocks, and all transactions of all accounts";
 	try {
 		CHECK(account_blocks_dict_);
 	//TODO: replace with valdate_check
@@ -2233,10 +2079,8 @@ bool ContestValidateQuery::build_new_message_queue() {
 
 				vm::Dictionary dispatch_dict{64};
 				td::uint64 dispatch_dict_size;
-				if (!block::unpack_account_dispatch_queue(ns_.dispatch_queue_->lookup(addr), dispatch_dict,
-																									dispatch_dict_size)) {
+				if(!block::unpack_account_dispatch_queue(ns_.dispatch_queue_->lookup(addr), dispatch_dict, dispatch_dict_size))
 					return fatal_error(PSTRING() << "cannot unpack AccountDispatchQueue for account " << addr.to_hex());
-				}
 				td::BitArray<64> key;
 				key.store_ulong(lt);
 				vm::CellBuilder cb;
@@ -2358,10 +2202,7 @@ bool ContestValidateQuery::build_new_message_queue() {
  *
  * @returns True if the update is valid, false otherwise.
  */
-bool ContestValidateQuery::precheck_one_message_queue_update(td::ConstBitPtr out_msg_id, Ref<vm::CellSlice> old_value,
-																														 Ref<vm::CellSlice> new_value) {
-	LOG(DEBUG) << "checking update of enqueued outbound message " << out_msg_id.get_int(32) << ":"
-						 << (out_msg_id + 32).to_hex(64) << "... with hash " << (out_msg_id + 96).to_hex(256);
+bool ContestValidateQuery::precheck_one_message_queue_update(td::ConstBitPtr out_msg_id, Ref<vm::CellSlice> old_value, Ref<vm::CellSlice> new_value) {
 	old_value = ps_.out_msg_queue_->extract_value(std::move(old_value));
 	new_value = ns_.out_msg_queue_->extract_value(std::move(new_value));
 	CHECK(old_value.not_null() || new_value.not_null());
@@ -2552,14 +2393,7 @@ bool ContestValidateQuery::precheck_message_queue_update() {
 			return reject_query("invalid OutMsgQueue dictionary in the new state");
 		}
 	} catch (vm::VmError& err) {
-		return reject_query("invalid OutMsgQueue dictionary difference between the old and the new state: "s +
-												err.get_msg());
-	}
-	if (store_out_msg_queue_size_) {
-	} else {
-		if (ns_.out_msg_queue_size_) {
-			return reject_query("outbound message queue size in the new state is present, but shouldn't");
-		}
+		return reject_query("invalid OutMsgQueue dictionary difference between the old and the new state: "s + err.get_msg());
 	}
 	return true;
 }
@@ -3377,7 +3211,6 @@ bool ContestValidateQuery::check_in_msg(td::ConstBitPtr key, Ref<vm::CellSlice> 
  * @returns True if the inbound messages dictionary is valid, false otherwise.
  */
 bool ContestValidateQuery::check_in_msg_descr() {
-	LOG(INFO) << "checking inbound messages listed in InMsgDescr";
 	try {
 		CHECK(in_msg_dict_);
 	//TODO: replace with valdate_check
@@ -4023,7 +3856,6 @@ bool ContestValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice>
  * @returns True if the outbound messages dictionary is valid, false otherwise.
  */
 bool ContestValidateQuery::check_out_msg_descr() {
-	LOG(INFO) << "checking outbound messages listed in OutMsgDescr";
 	try {
 		CHECK(out_msg_dict_);
 	//TODO: replace with valdate_check
@@ -4135,9 +3967,9 @@ bool ContestValidateQuery::check_dispatch_queue_update() {
  * @returns True if the message is valid, false otherwise.
  */
 bool ContestValidateQuery::check_neighbor_outbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalTime lt,
-																													 td::ConstBitPtr key, const block::McShardDescr& nb,
-																													 bool& unprocessed, bool& processed_here,
-																													 td::Bits256& msg_hash) {
+															td::ConstBitPtr key, const block::McShardDescr& nb,
+															bool& unprocessed, bool& processed_here,
+															td::Bits256& msg_hash) {
 	unprocessed = false;
 	block::EnqueuedMsgDescr enq;
 	if (!enq.unpack(enq_msg.write())) {  // unpack EnqueuedMsg
@@ -4291,25 +4123,11 @@ bool ContestValidateQuery::check_in_queue() {
 	while (!nb_out_msgs.is_eof()) {
 		auto kv = nb_out_msgs.extract_cur();
 		CHECK(kv && kv->msg.not_null());
-		LOG(DEBUG) << "processing inbound message with (lt,hash)=(" << kv->lt << "," << kv->key.to_hex()
-							 << ") from neighbor #" << kv->source;
-		if (verbosity > 3) {
-			std::cerr << "inbound message: lt=" << kv->lt << " from=" << kv->source << " key=" << kv->key.to_hex() << " msg=";
-			block::gen::t_EnqueuedMsg.print(std::cerr, *(kv->msg));
-		}
 		bool unprocessed = false;
 		bool processed_here = false;
 		td::Bits256 msg_hash;
-		if (!check_neighbor_outbound_message(kv->msg, kv->lt, kv->key.cbits(), neighbors_.at(kv->source), unprocessed,
-																				 processed_here, msg_hash)) {
-			if (verbosity > 1) {
-				std::cerr << "invalid neighbor outbound message: lt=" << kv->lt << " from=" << kv->source
-									<< " key=" << kv->key.to_hex() << " msg=";
-				block::gen::t_EnqueuedMsg.print(std::cerr, *(kv->msg));
-			}
-			return reject_query("error processing outbound internal message "s + kv->key.to_hex() + " of neighbor " +
-													neighbors_.at(kv->source).blk_.to_str());
-		}
+		if (!check_neighbor_outbound_message(kv->msg, kv->lt, kv->key.cbits(), neighbors_.at(kv->source), unprocessed, processed_here, msg_hash))
+			return reject_query("error processing outbound internal message "s + kv->key.to_hex() + " of neighbor " + neighbors_.at(kv->source).blk_.to_str());
 		if (processed_here) {
 			--imported_messages_count;
 		}
@@ -4335,8 +4153,7 @@ bool ContestValidateQuery::check_in_queue() {
  *
  * @returns A unique pointer to the created Account object, or nullptr if the creation failed.
  */
-std::unique_ptr<block::Account> ContestValidateQuery::make_account_from(td::ConstBitPtr addr,
-																																				Ref<vm::CellSlice> account) {
+std::unique_ptr<block::Account> ContestValidateQuery::make_account_from(td::ConstBitPtr addr, Ref<vm::CellSlice> account) {
 	auto ptr = std::make_unique<block::Account>(workchain(), addr);
 	if (account.is_null()) {
 		if (!ptr->init_new(now_)) {
@@ -4361,14 +4178,13 @@ std::unique_ptr<block::Account> ContestValidateQuery::make_account_from(td::Cons
  */
 std::unique_ptr<block::Account> ContestValidateQuery::unpack_account(td::ConstBitPtr addr) {
 	auto dict_entry = ps_.account_dict_->lookup_extra(addr, 256);
-	auto new_acc = make_account_from(addr, std::move(dict_entry.first));
-	if (!new_acc) {
+	std::unique_ptr<block::Account> new_acc = make_account_from(addr, std::move(dict_entry.first));
+	if(!new_acc) {
 		reject_query("cannot load state of account "s + addr.to_hex(256) + " from previous shardchain state");
 		return {};
 	}
-	if (!new_acc->belongs_to_shard(shard_)) {
-		reject_query(PSTRING() << "old state of account " << addr.to_hex(256)
-													 << " does not really belong to current shard");
+	if(!new_acc->belongs_to_shard(shard_)) {
+		reject_query(PSTRING() << "old state of account " << addr.to_hex(256) << " does not really belong to current shard");
 		return {};
 	}
 	return new_acc;
@@ -4386,14 +4202,12 @@ std::unique_ptr<block::Account> ContestValidateQuery::unpack_account(td::ConstBi
  *
  * @returns True if the transaction is valid, false otherwise.
  */
-bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::LogicalTime lt, Ref<vm::Cell> trans_root,
-																								 bool is_first, bool is_last) {
-	LOG(DEBUG) << "checking transaction " << lt << " of account " << account.addr.to_hex();
+bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first, bool is_last) {
+	PROFILER("chk_one_trans");
 	const StdSmcAddress& addr = account.addr;
 	block::gen::Transaction::Record trans;
 	block::gen::HASH_UPDATE::Record hash_upd;
-	CHECK(tlb::unpack_cell(trans_root, trans) &&
-				tlb::type_unpack_cell(std::move(trans.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd));
+	CHECK(tlb::unpack_cell(trans_root, trans) && tlb::type_unpack_cell(std::move(trans.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd));
 	auto in_msg_root = trans.r1.in_msg->prefetch_ref();
 	bool external{false}, ihr_delivered{false}, need_credit_phase{false};
 	// check input message
@@ -4403,28 +4217,27 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 	int tag = block::gen::t_TransactionDescr.get_tag(td_cs);
 	CHECK(tag >= 0);  // we have already validated the serialization of all Transactions
 	td::optional<block::MsgMetadata> in_msg_metadata;
-	if (in_msg_root.not_null()) {
+	if(in_msg_root.not_null()) {
 		auto in_descr_cs = in_msg_dict_->lookup(in_msg_root->get_hash().as_bitslice());
-		if (in_descr_cs.is_null()) {
+		if(in_descr_cs.is_null())
 			return reject_query(PSTRING() << "inbound message with hash " << in_msg_root->get_hash().to_hex()
-																		<< " of transaction " << lt << " of account " << addr.to_hex()
-																		<< " does not have a corresponding InMsg record");
-		}
+											<< " of transaction " << lt << " of account " << addr.to_hex()
+											<< " does not have a corresponding InMsg record");
 		auto in_msg_tag = block::gen::t_InMsg.get_tag(*in_descr_cs);
 		if (in_msg_tag != block::gen::InMsg::msg_import_ext && in_msg_tag != block::gen::InMsg::msg_import_fin &&
 				in_msg_tag != block::gen::InMsg::msg_import_imm && in_msg_tag != block::gen::InMsg::msg_import_ihr &&
 				in_msg_tag != block::gen::InMsg::msg_import_deferred_fin) {
 			return reject_query(PSTRING() << "inbound message with hash " << in_msg_root->get_hash().to_hex()
-																		<< " of transaction " << lt << " of account " << addr.to_hex()
-																		<< " has an invalid InMsg record (not one of msg_import_ext, msg_import_fin, "
-																			 "msg_import_imm, msg_import_ihr or msg_import_deferred_fin)");
+											<< " of transaction " << lt << " of account " << addr.to_hex()
+											<< " has an invalid InMsg record (not one of msg_import_ext, msg_import_fin, "
+												 "msg_import_imm, msg_import_ihr or msg_import_deferred_fin)");
 		}
 		is_special_tx = is_special_in_msg(*in_descr_cs);
 		// once we know there is a InMsg with correct hash, we already know that it contains a message with this hash (by the verification of InMsg), so it is our message
 		// have still to check its destination address and imported value
 		// and that it refers to this transaction
 		Ref<vm::CellSlice> dest;
-		if (in_msg_tag == block::gen::InMsg::msg_import_ext) {
+		if(in_msg_tag == block::gen::InMsg::msg_import_ext) {
 			block::gen::CommonMsgInfo::Record_ext_in_msg_info info;
 			CHECK(tlb::unpack_cell_inexact(in_msg_root, info));
 			dest = std::move(info.dest);
@@ -4432,67 +4245,56 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 		} else {
 			block::gen::CommonMsgInfo::Record_int_msg_info info;
 			CHECK(tlb::unpack_cell_inexact(in_msg_root, info));
-			if (info.created_lt >= lt) {
+			if(info.created_lt >= lt)
 				return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex()
-																			<< " processed inbound message created later at logical time "
-																			<< info.created_lt);
-			}
+												<< " processed inbound message created later at logical time "
+												<< info.created_lt);
 			LogicalTime emitted_lt = info.created_lt;  // See ContestValidateQuery::check_message_processing_order
-			if (in_msg_tag == block::gen::InMsg::msg_import_imm || in_msg_tag == block::gen::InMsg::msg_import_fin ||
-					in_msg_tag == block::gen::InMsg::msg_import_deferred_fin) {
+			if(in_msg_tag == block::gen::InMsg::msg_import_imm || in_msg_tag == block::gen::InMsg::msg_import_fin || in_msg_tag == block::gen::InMsg::msg_import_deferred_fin) {
 				block::tlb::MsgEnvelope::Record_std msg_env;
-				if (!block::tlb::unpack_cell(in_descr_cs->prefetch_ref(), msg_env)) {
+				if(!block::tlb::unpack_cell(in_descr_cs->prefetch_ref(), msg_env))
 					return reject_query(PSTRING() << "InMsg record for inbound message with hash "
-																				<< in_msg_root->get_hash().to_hex() << " of transaction " << lt
-																				<< " of account " << addr.to_hex() << " does not have a valid MsgEnvelope");
-				}
+													<< in_msg_root->get_hash().to_hex() << " of transaction " << lt
+													<< " of account " << addr.to_hex() << " does not have a valid MsgEnvelope");
 				in_msg_metadata = std::move(msg_env.metadata);
-				if (msg_env.emitted_lt) {
-					emitted_lt = msg_env.emitted_lt.value();
-				}
+				if(msg_env.emitted_lt) emitted_lt = msg_env.emitted_lt.value();
 			}
-			if (info.created_lt != start_lt_ || !is_special_tx) {
-				msg_proc_lt_.emplace_back(addr, lt, emitted_lt);
-			}
+			if(info.created_lt != start_lt_ || !is_special_tx) msg_proc_lt_.emplace_back(addr, lt, emitted_lt);
 			dest = std::move(info.dest);
 			CHECK(money_imported.validate_unpack(info.value));
 			ihr_delivered = (in_msg_tag == block::gen::InMsg::msg_import_ihr);
-			if (!ihr_delivered) {
-				money_imported += block::tlb::t_Grams.as_integer(info.ihr_fee);
-			}
+			if(!ihr_delivered) money_imported += block::tlb::t_Grams.as_integer(info.ihr_fee);
 			CHECK(money_imported.is_valid());
 		}
 		WorkchainId d_wc;
 		StdSmcAddress d_addr;
 		CHECK(block::tlb::t_MsgAddressInt.extract_std_address(dest, d_wc, d_addr));
-		if (d_wc != workchain() || d_addr != addr) {
+		if(d_wc != workchain() || d_addr != addr)
 			return reject_query(PSTRING() << "inbound message of transaction " << lt << " of account " << addr.to_hex()
-																		<< " has a different destination address " << d_wc << ":" << d_addr.to_hex());
-		}
+											<< " has a different destination address " << d_wc << ":" << d_addr.to_hex());
 		auto in_msg_trans = in_descr_cs->prefetch_ref(1);  // trans:^Transaction
 		CHECK(in_msg_trans.not_null());
-		if (in_msg_trans->get_hash() != trans_root->get_hash()) {
+		if(in_msg_trans->get_hash() != trans_root->get_hash())
 			return reject_query(PSTRING() << "InMsg record for inbound message with hash " << in_msg_root->get_hash().to_hex()
-																		<< " of transaction " << lt << " of account " << addr.to_hex()
-																		<< " refers to a different processing transaction");
-		}
+											<< " of transaction " << lt << " of account " << addr.to_hex()
+											<< " refers to a different processing transaction");
 	}
 	// check output messages
 	td::optional<block::MsgMetadata> new_msg_metadata;
-	if (msg_metadata_enabled_) {
-		if (external || is_special_tx || tag != block::gen::TransactionDescr::trans_ord) {
+	if(msg_metadata_enabled_) {
+		if(external || is_special_tx || tag != block::gen::TransactionDescr::trans_ord) {
 			new_msg_metadata = block::MsgMetadata{0, account.workchain, account.addr, (LogicalTime)trans.lt};
-		} else if (in_msg_metadata) {
+		} else if(in_msg_metadata) {
 			new_msg_metadata = std::move(in_msg_metadata);
 			++new_msg_metadata.value().depth;
 		}
 	}
 	vm::Dictionary out_dict{trans.r1.out_msgs, 15};
-	for (int i = 0; i < trans.outmsg_cnt; i++) {
+	for(int i = 0; i < trans.outmsg_cnt; i++) {
 		auto out_msg_root = out_dict.lookup_ref(td::BitArray<15>{i});
 		CHECK(out_msg_root.not_null());  // we have pre-checked this
 		auto out_descr_cs = out_msg_dict_->lookup(out_msg_root->get_hash().as_bitslice());
-		if (out_descr_cs.is_null()) {
+		if(out_descr_cs.is_null()) {
 			return reject_query(PSTRING() << "outbound message #" << i + 1 << " with hash "
 																		<< out_msg_root->get_hash().to_hex() << " of transaction " << lt << " of account "
 																		<< addr.to_hex() << " does not have a corresponding OutMsg record");
@@ -4512,7 +4314,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 		// and that it refers to this transaction as its origin
 		Ref<vm::CellSlice> src;
 		LogicalTime message_lt;
-		if (tag == block::gen::OutMsg::msg_export_ext) {
+		if(tag == block::gen::OutMsg::msg_export_ext) {
 			block::gen::CommonMsgInfo::Record_ext_out_msg_info info;
 			CHECK(tlb::unpack_cell_inexact(out_msg_root, info));
 			src = std::move(info.src);
@@ -4531,48 +4333,40 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 			msg_export_value += msg_env.fwd_fee_remaining;
 			CHECK(msg_export_value.is_valid());
 			money_exported += msg_export_value;
-			if (msg_env.metadata != new_msg_metadata) {
+			if (msg_env.metadata != new_msg_metadata)
 				return reject_query(PSTRING() << "outbound message #" << i + 1 << " with hash "
-																			<< out_msg_root->get_hash().to_hex() << " of transaction " << lt << " of account "
-																			<< addr.to_hex() << " has invalid metadata in an OutMsg record: expected "
-																			<< (new_msg_metadata ? new_msg_metadata.value().to_str() : "<none>") << ", found "
-																			<< (msg_env.metadata ? msg_env.metadata.value().to_str() : "<none>"));
-			}
+												<< out_msg_root->get_hash().to_hex() << " of transaction " << lt << " of account "
+												<< addr.to_hex() << " has invalid metadata in an OutMsg record: expected "
+												<< (new_msg_metadata ? new_msg_metadata.value().to_str() : "<none>") << ", found "
+												<< (msg_env.metadata ? msg_env.metadata.value().to_str() : "<none>"));
 		}
 		WorkchainId s_wc;
 		StdSmcAddress ss_addr;  // s_addr is some macros in Windows
 		CHECK(block::tlb::t_MsgAddressInt.extract_std_address(src, s_wc, ss_addr));
-		if (s_wc != workchain() || ss_addr != addr) {
+		if(s_wc != workchain() || ss_addr != addr)
 			return reject_query(PSTRING() << "outbound message #" << i + 1 << " of transaction " << lt << " of account "
-																		<< addr.to_hex() << " has a different source address " << s_wc << ":"
-																		<< ss_addr.to_hex());
-		}
+											<< addr.to_hex() << " has a different source address " << s_wc << ":"
+											<< ss_addr.to_hex());
 		auto out_msg_trans = out_descr_cs->prefetch_ref(1);  // trans:^Transaction
 		CHECK(out_msg_trans.not_null());
-		if (out_msg_trans->get_hash() != trans_root->get_hash()) {
+		if(out_msg_trans->get_hash() != trans_root->get_hash()) {
 			return reject_query(PSTRING() << "OutMsg record for outbound message #" << i + 1 << " with hash "
-																		<< out_msg_root->get_hash().to_hex() << " of transaction " << lt << " of account "
-																		<< addr.to_hex() << " refers to a different processing transaction");
+											<< out_msg_root->get_hash().to_hex() << " of transaction " << lt << " of account "
+											<< addr.to_hex() << " refers to a different processing transaction");
 		}
-		if (tag != block::gen::OutMsg::msg_export_ext) {
+		if(tag != block::gen::OutMsg::msg_export_ext) {
 			bool is_deferred = tag == block::gen::OutMsg::msg_export_new_defer;
-			if (account_expected_defer_all_messages_.count(ss_addr) && !is_deferred) {
-				return reject_query(
-						PSTRING() << "outbound message #" << i + 1 << " on account " << workchain() << ":" << ss_addr.to_hex()
-											<< " must be deferred because this account has earlier messages in DispatchQueue");
-			}
-			if (is_deferred) {
-				LOG(INFO) << "message from account " << workchain() << ":" << ss_addr.to_hex() << " with lt " << message_lt
-									<< " was deferred";
-				if (!deferring_messages_enabled_ && !account_expected_defer_all_messages_.count(ss_addr)) {
+			if(account_expected_defer_all_messages_.count(ss_addr) && !is_deferred)
+				return reject_query(PSTRING() << "outbound message #" << i + 1 << " on account " << workchain() << ":" << ss_addr.to_hex()
+												<< " must be deferred because this account has earlier messages in DispatchQueue");
+			if(is_deferred) {
+				LOG(INFO) << "message from account " << workchain() << ":" << ss_addr.to_hex() << " with lt " << message_lt << " was deferred";
+				if(!deferring_messages_enabled_ && !account_expected_defer_all_messages_.count(ss_addr))
 					return reject_query(PSTRING() << "outbound message #" << i + 1 << " on account " << workchain() << ":"
-																				<< ss_addr.to_hex() << " is deferred, but deferring messages is disabled");
-				}
-				if (i == 0 && !account_expected_defer_all_messages_.count(ss_addr)) {
+													<< ss_addr.to_hex() << " is deferred, but deferring messages is disabled");
+				if(i == 0 && !account_expected_defer_all_messages_.count(ss_addr))
 					return reject_query(PSTRING() << "outbound message #1 on account " << workchain() << ":" << ss_addr.to_hex()
-																				<< " must not be deferred (the first message cannot be deferred unless some "
-																					 "prevoius messages are deferred)");
-				}
+													<< " must not be deferred (the first message cannot be deferred unless some prevoius messages are deferred)");
 				account_expected_defer_all_messages_.insert(ss_addr);
 			}
 		}
@@ -4584,8 +4378,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 			tag == block::gen::TransactionDescr::trans_merge_install ||
 			tag == block::gen::TransactionDescr::trans_split_prepare ||
 			tag == block::gen::TransactionDescr::trans_split_install) {
-		bool split = (tag == block::gen::TransactionDescr::trans_split_prepare ||
-									tag == block::gen::TransactionDescr::trans_split_install);
+		bool split = (tag == block::gen::TransactionDescr::trans_split_prepare || tag == block::gen::TransactionDescr::trans_split_install);
 		if (split && !before_split_) {
 			return reject_query(PSTRING() << "transaction " << lt << " of account " << addr.to_hex()
 																		<< " is a split prepare/install transaction, but this block is not before a split");
@@ -4607,8 +4400,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 		}
 		// check later a global configuration flag in config_.global_flags_
 		// (for now, split/merge transactions are always globally disabled)
-		return reject_query(PSTRING() << "transaction " << lt << " of account " << addr.to_hex()
-																	<< " is a split/merge prepare/install transaction, which are globally disabled");
+		return reject_query(PSTRING() << "transaction " << lt << " of account " << addr.to_hex() << " is a split/merge prepare/install transaction, which are globally disabled");
 	}
 	if (tag == block::gen::TransactionDescr::trans_tick_tock) {
 		return reject_query(PSTRING() << "transaction " << lt << " of account " << addr.to_hex()
@@ -4621,37 +4413,26 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 	}
 	// check that the original account state has correct hash
 	CHECK(account.total_state.not_null());
-	if (hash_upd.old_hash != account.total_state->get_hash().bits()) {
+	if(hash_upd.old_hash != account.total_state->get_hash().bits())
 		return reject_query(PSTRING() << "transaction " << lt << " of account " << addr.to_hex()
-																	<< " claims that the original account state hash must be "
-																	<< hash_upd.old_hash.to_hex() << " but the actual value is "
-																	<< account.total_state->get_hash().to_hex());
-	}
+										<< " claims that the original account state hash must be "
+										<< hash_upd.old_hash.to_hex() << " but the actual value is "
+										<< account.total_state->get_hash().to_hex());
 	// some type-specific checks
 	int trans_type = block::transaction::Transaction::tr_none;
 	switch (tag) {
 		case block::gen::TransactionDescr::trans_ord: {
 			trans_type = block::transaction::Transaction::tr_ord;
-			if (in_msg_root.is_null()) {
-				return reject_query(PSTRING() << "ordinary transaction " << lt << " of account " << addr.to_hex()
-																			<< " has no inbound message");
-			}
+			if(in_msg_root.is_null()) return reject_query(PSTRING() << "ordinary transaction " << lt << " of account " << addr.to_hex() << " has no inbound message");
 			need_credit_phase = !external;
 			break;
 		}
 		case block::gen::TransactionDescr::trans_storage: {
 			trans_type = block::transaction::Transaction::tr_storage;
-			if (in_msg_root.not_null()) {
-				return reject_query(PSTRING() << "storage transaction " << lt << " of account " << addr.to_hex()
-																			<< " has an inbound message");
-			}
-			if (trans.outmsg_cnt) {
-				return reject_query(PSTRING() << "storage transaction " << lt << " of account " << addr.to_hex()
-																			<< " has at least one outbound message");
-			}
+			if(in_msg_root.not_null()) return reject_query(PSTRING() << "storage transaction " << lt << " of account " << addr.to_hex() << " has an inbound message");
+			if(trans.outmsg_cnt) return reject_query(PSTRING() << "storage transaction " << lt << " of account " << addr.to_hex() << " has at least one outbound message");
 			// FIXME
-			return reject_query(PSTRING() << "unable to verify storage transaction " << lt << " of account "
-																		<< addr.to_hex());
+			return reject_query(PSTRING() << "unable to verify storage transaction " << lt << " of account " << addr.to_hex());
 			break;
 		}
 		case block::gen::TransactionDescr::trans_tick_tock: {
@@ -4717,72 +4498,50 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 			break;
 		}
 	}
-	// ....
 	// check transaction computation by re-doing it
 	// similar to Collator::create_ordinary_transaction() and Collator::create_ticktock_transaction()
-	// ....
-	std::unique_ptr<block::transaction::Transaction> trs =
-			std::make_unique<block::transaction::Transaction>(account, trans_type, lt, now_, in_msg_root);
-	if (in_msg_root.not_null()) {
-		if (!trs->unpack_input_msg(ihr_delivered, &action_phase_cfg_)) {
+	std::unique_ptr<block::transaction::Transaction> trs = std::make_unique<block::transaction::Transaction>(account, trans_type, lt, now_, in_msg_root);
+	if(in_msg_root.not_null()) {
+		if(!trs->unpack_input_msg(ihr_delivered, &action_phase_cfg_))
 			// inbound external message was not accepted
 			return reject_query(PSTRING() << "could not unpack inbound " << (external ? "external" : "internal")
-																		<< " message processed by ordinary transaction " << lt << " of account "
-																		<< addr.to_hex());
-		}
+											<< " message processed by ordinary transaction " << lt << " of account "
+											<< addr.to_hex());
 	}
-	if (trs->bounce_enabled) {
-		if (!trs->prepare_storage_phase(storage_phase_cfg_, true)) {
-			return reject_query(PSTRING() << "cannot re-create storage phase of transaction " << lt << " for smart contract "
-																		<< addr.to_hex());
-		}
-		if (need_credit_phase && !trs->prepare_credit_phase()) {
-			return reject_query(PSTRING() << "cannot create re-credit phase of transaction " << lt << " for smart contract "
-																		<< addr.to_hex());
-		}
+	if(trs->bounce_enabled) {
+		if(!trs->prepare_storage_phase(storage_phase_cfg_, true))
+			return reject_query(PSTRING() << "cannot re-create storage phase of transaction " << lt << " for smart contract " << addr.to_hex());
+		if(need_credit_phase && !trs->prepare_credit_phase())
+			return reject_query(PSTRING() << "cannot create re-credit phase of transaction " << lt << " for smart contract " << addr.to_hex());
 	} else {
-		if (need_credit_phase && !trs->prepare_credit_phase()) {
-			return reject_query(PSTRING() << "cannot re-create credit phase of transaction " << lt << " for smart contract "
-																		<< addr.to_hex());
-		}
-		if (!trs->prepare_storage_phase(storage_phase_cfg_, true, need_credit_phase)) {
-			return reject_query(PSTRING() << "cannot re-create storage phase of transaction " << lt << " for smart contract "
-																		<< addr.to_hex());
-		}
+		if(need_credit_phase && !trs->prepare_credit_phase())
+			return reject_query(PSTRING() << "cannot re-create credit phase of transaction " << lt << " for smart contract " << addr.to_hex());
+		if(!trs->prepare_storage_phase(storage_phase_cfg_, true, need_credit_phase))
+			return reject_query(PSTRING() << "cannot re-create storage phase of transaction " << lt << " for smart contract " << addr.to_hex());
 	}
-	if (!trs->prepare_compute_phase(compute_phase_cfg_)) {
-		return reject_query(PSTRING() << "cannot re-create compute phase of transaction " << lt << " for smart contract "
-																	<< addr.to_hex());
-	}
-	if (!trs->compute_phase->accepted) {
-		if (external) {
+	if(!trs->prepare_compute_phase(compute_phase_cfg_))
+		return reject_query(PSTRING() << "cannot re-create compute phase of transaction " << lt << " for smart contract " << addr.to_hex());
+	if(!trs->compute_phase->accepted) {
+		if(external)
 			return reject_query(PSTRING() << "inbound external message claimed to be processed by ordinary transaction " << lt
-																		<< " of account " << addr.to_hex()
-																		<< " was in fact rejected (such transaction cannot appear in valid blocks)");
-		} else if (trs->compute_phase->skip_reason == block::ComputePhase::sk_none) {
-			return reject_query(PSTRING() << "inbound internal message processed by ordinary transaction " << lt
-																		<< " of account " << addr.to_hex() << " was not processed without any reason");
-		}
+											<< " of account " << addr.to_hex()
+											<< " was in fact rejected (such transaction cannot appear in valid blocks)");
+		if(trs->compute_phase->skip_reason == block::ComputePhase::sk_none)
+			return reject_query(PSTRING() << "inbound internal message processed by ordinary transaction " << lt << " of account " << addr.to_hex() << " was not processed without any reason");
 	}
-	if (trs->compute_phase->success && !trs->prepare_action_phase(action_phase_cfg_)) {
-		return reject_query(PSTRING() << "cannot re-create action phase of transaction " << lt << " for smart contract "
-																	<< addr.to_hex());
+	{
+		PROFILER("prep_action_phase");
+	if(trs->compute_phase->success && !trs->prepare_action_phase(action_phase_cfg_))
+		return reject_query(PSTRING() << "cannot re-create action phase of transaction " << lt << " for smart contract " << addr.to_hex());
 	}
 	if (trs->bounce_enabled &&
 			(!trs->compute_phase->success || trs->action_phase->state_exceeds_limits || trs->action_phase->bounce) &&
 			!trs->prepare_bounce_phase(action_phase_cfg_)) {
-		return reject_query(PSTRING() << "cannot re-create bounce phase of  transaction " << lt << " for smart contract "
-																	<< addr.to_hex());
+		return reject_query(PSTRING() << "cannot re-create bounce phase of  transaction " << lt << " for smart contract " << addr.to_hex());
 	}
-	if (!trs->serialize()) {
-		return reject_query(PSTRING() << "cannot re-create the serialization of  transaction " << lt
-																	<< " for smart contract " << addr.to_hex());
-	}
-	if (!trs->update_limits(*block_limit_status_, /* with_gas = */ false, /* with_size = */ false)) {
-		return fatal_error(PSTRING() << "cannot update block limit status to include transaction " << lt << " of account "
-																 << addr.to_hex());
-	}
-
+	if(!trs->serialize()) return reject_query(PSTRING() << "cannot re-create the serialization of  transaction " << lt << " for smart contract " << addr.to_hex());
+	if(!trs->update_limits(*block_limit_status_, /* with_gas = */ false, /* with_size = */ false))
+		return fatal_error(PSTRING() << "cannot update block limit status to include transaction " << lt << " of account " << addr.to_hex());
 	// Collator should stop if total gas usage exceeds limits, including transactions on special accounts, but without
 	// ticktocks and mint/recover.
 	// Here Validator checks a weaker condition
@@ -4804,67 +4563,46 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 	}
 
 	auto trans_root2 = trs->commit(account);
-	if (trans_root2.is_null()) {
-		return reject_query(PSTRING() << "the re-created transaction " << lt << " for smart contract " << addr.to_hex()
-																	<< " could not be committed");
-	}
+	if(trans_root2.is_null()) return reject_query(PSTRING() << "the re-created transaction " << lt << " for smart contract " << addr.to_hex() << " could not be committed");
 	// now compare the re-created transaction with the one we have
-	if (trans_root2->get_hash() != trans_root->get_hash()) {
-		if (verbosity >= 3 * 0) {
-			std::cerr << "original transaction " << lt << " of " << addr.to_hex() << ": ";
-			block::gen::t_Transaction.print_ref(std::cerr, trans_root);
-			std::cerr << "re-created transaction " << lt << " of " << addr.to_hex() << ": ";
-			block::gen::t_Transaction.print_ref(std::cerr, trans_root2);
-		}
+	if(trans_root2->get_hash() != trans_root->get_hash()) {
+		std::cerr << "original transaction " << lt << " of " << addr.to_hex() << ": ";
+		block::gen::t_Transaction.print_ref(std::cerr, trans_root);
+		std::cerr << "re-created transaction " << lt << " of " << addr.to_hex() << ": ";
+		block::gen::t_Transaction.print_ref(std::cerr, trans_root2);
 		return reject_query(PSTRING() << "the transaction " << lt << " of " << addr.to_hex() << " has hash "
-																	<< trans_root->get_hash().to_hex()
-																	<< " different from that of the recreated transaction "
-																	<< trans_root2->get_hash().to_hex());
+										<< trans_root->get_hash().to_hex()
+										<< " different from that of the recreated transaction "
+										<< trans_root2->get_hash().to_hex());
 	}
 	block::gen::Transaction::Record trans2;
 	block::gen::HASH_UPDATE::Record hash_upd2;
-	if (!(tlb::unpack_cell(trans_root2, trans2) &&
-				tlb::type_unpack_cell(std::move(trans2.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd2))) {
+	if (!(tlb::unpack_cell(trans_root2, trans2) && tlb::type_unpack_cell(std::move(trans2.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd2)))
 		return fatal_error(PSTRING() << "cannot unpack the re-created transaction " << lt << " of " << addr.to_hex());
-	}
-	if (hash_upd2.old_hash != hash_upd.old_hash) {
-		return fatal_error(PSTRING() << "the re-created transaction " << lt << " of " << addr.to_hex()
-																 << " is invalid: it starts from account state with different hash");
-	}
-	if (hash_upd2.new_hash != account.total_state->get_hash().bits()) {
-		return fatal_error(
-				PSTRING() << "the re-created transaction " << lt << " of " << addr.to_hex()
-									<< " is invalid: its claimed new account hash differs from the actual new account state");
-	}
-	if (hash_upd.new_hash != account.total_state->get_hash().bits()) {
+	if(hash_upd2.old_hash != hash_upd.old_hash)
+		return fatal_error(PSTRING() << "the re-created transaction " << lt << " of " << addr.to_hex() << " is invalid: it starts from account state with different hash");
+	if (hash_upd2.new_hash != account.total_state->get_hash().bits())
+		return fatal_error(PSTRING() << "the re-created transaction " << lt << " of " << addr.to_hex() << " is invalid: its claimed new account hash differs from the actual new account state");
+	if(hash_upd.new_hash != account.total_state->get_hash().bits())
 		return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex()
-																	<< " is invalid: it claims that the new account state hash is "
-																	<< hash_upd.new_hash.to_hex() << " but the re-computed value is "
-																	<< hash_upd2.new_hash.to_hex());
-	}
-	if (!trans.r1.out_msgs->contents_equal(*trans2.r1.out_msgs)) {
-		return reject_query(
-				PSTRING()
-				<< "transaction " << lt << " of " << addr.to_hex()
-				<< " is invalid: it has produced a set of outbound messages different from that listed in the transaction");
-	}
+										<< " is invalid: it claims that the new account state hash is "
+										<< hash_upd.new_hash.to_hex() << " but the re-computed value is "
+										<< hash_upd2.new_hash.to_hex());
+	if (!trans.r1.out_msgs->contents_equal(*trans2.r1.out_msgs))
+		return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex()
+										<< " is invalid: it has produced a set of outbound messages different from that listed in the transaction");
 	total_burned_ += trs->blackhole_burned;
 	// check new balance and value flow
 	auto new_balance = account.get_balance();
 	block::CurrencyCollection total_fees;
-	if (!total_fees.validate_unpack(trans.total_fees)) {
+	if(!total_fees.validate_unpack(trans.total_fees))
+		return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex() << " has an invalid total_fees value");
+	if(old_balance + money_imported != new_balance + money_exported + total_fees + trs->blackhole_burned)
 		return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex()
-																	<< " has an invalid total_fees value");
-	}
-	if (old_balance + money_imported != new_balance + money_exported + total_fees + trs->blackhole_burned) {
-		return reject_query(
-				PSTRING() << "transaction " << lt << " of " << addr.to_hex()
-									<< " violates the currency flow condition: old balance=" << old_balance.to_str()
-									<< " + imported=" << money_imported.to_str() << " does not equal new balance=" << new_balance.to_str()
-									<< " + exported=" << money_exported.to_str() << " + total_fees=" << total_fees.to_str()
-									<< (trs->blackhole_burned.is_zero() ? ""
-																											: PSTRING() << " burned=" << trs->blackhole_burned.to_str()));
-	}
+										<< " violates the currency flow condition: old balance=" << old_balance.to_str()
+										<< " + imported=" << money_imported.to_str() << " does not equal new balance=" << new_balance.to_str()
+										<< " + exported=" << money_exported.to_str() << " + total_fees=" << total_fees.to_str()
+										<< (trs->blackhole_burned.is_zero() ? "" : PSTRING() << " burned=" << trs->blackhole_burned.to_str()));
 	return true;
 }
 
@@ -4878,23 +4616,19 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
  * @returns True if the account transactions are valid, false otherwise.
  */
 bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_addr, Ref<vm::CellSlice> acc_blk_root) {
+	PROFILER("chk_account_trans");
 	block::gen::AccountBlock::Record acc_blk;
-	CHECK(tlb::csr_unpack(std::move(acc_blk_root), acc_blk) && acc_blk.account_addr == acc_addr);
+	tlb::csr_unpack(std::move(acc_blk_root), acc_blk) && acc_blk.account_addr == acc_addr;
 	auto account_p = unpack_account(acc_addr.cbits());
-	if (!account_p) {
-		return reject_query("cannot unpack old state of account "s + acc_addr.to_hex());
-	}
+	if(!account_p) reject_query("cannot unpack old state of account "s + acc_addr.to_hex());
 	auto& account = *account_p;
-	CHECK(account.addr == acc_addr);
-	vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(acc_blk.transactions), 64,
-																		 block::tlb::aug_AccountTransactions};
+	// account.addr == acc_addr
+	vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(acc_blk.transactions), 64, block::tlb::aug_AccountTransactions};
 	td::BitArray<64> min_trans, max_trans;
-	CHECK(trans_dict.get_minmax_key(min_trans).not_null() && trans_dict.get_minmax_key(max_trans, true).not_null());
+	// trans_dict.get_minmax_key(min_trans).not_null()
+	// trans_dict.get_minmax_key(max_trans, true).not_null());
 	ton::LogicalTime min_trans_lt = min_trans.to_ulong(), max_trans_lt = max_trans.to_ulong();
-	if (!trans_dict.check_for_each_extra([this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value,
-																																										Ref<vm::CellSlice> extra,
-																																										td::ConstBitPtr key, int key_len) {
-				CHECK(key_len == 64);
+	if(!trans_dict.check_for_each_extra([this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
 				ton::LogicalTime lt = key.get_uint(64);
 				extra.clear();
 				return check_one_transaction(account, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
@@ -4907,58 +4641,39 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
 		// account changed
 		if (account.orig_status == block::Account::acc_nonexist) {
 			// account created
-			CHECK(account.status != block::Account::acc_nonexist);
 			vm::CellBuilder cb;
-			if (!(cb.store_ref_bool(account.total_state)             // account_descr$_ account:^Account
+			if(!(cb.store_ref_bool(account.total_state)             // account_descr$_ account:^Account
 						&& cb.store_bits_bool(account.last_trans_hash_)    // last_trans_hash:bits256
 						&& cb.store_long_bool(account.last_trans_lt_, 64)  // last_trans_lt:uint64
 						&& ns_.account_dict_->set_builder(account.addr, cb, vm::Dictionary::SetMode::Add))) {
-				return fatal_error(std::string{"cannot add newly-created account "} + account.addr.to_hex() +
-													 " into ShardAccounts");
+				return fatal_error(std::string{"cannot add newly-created account "} + account.addr.to_hex() + " into ShardAccounts");
 			}
-		} else if (account.status == block::Account::acc_nonexist) {
+		} else if(account.status == block::Account::acc_nonexist) {
 			// account deleted
-			if (verbosity > 2) {
-				std::cerr << "deleting account " << account.addr.to_hex() << " with empty new value ";
-				block::gen::t_Account.print_ref(std::cerr, account.total_state);
-			}
-			if (ns_.account_dict_->lookup_delete(account.addr).is_null()) {
+			if(ns_.account_dict_->lookup_delete(account.addr).is_null())
 				return fatal_error(std::string{"cannot delete account "} + account.addr.to_hex() + " from ShardAccounts");
-			}
 		} else {
 			// existing account modified
-			if (verbosity > 4) {
-				std::cerr << "modifying account " << account.addr.to_hex() << " to ";
-				block::gen::t_Account.print_ref(std::cerr, account.total_state);
-			}
 			vm::CellBuilder cb;
-			if (!(cb.store_ref_bool(account.total_state)             // account_descr$_ account:^Account
+			if(!(cb.store_ref_bool(account.total_state)             // account_descr$_ account:^Account
 						&& cb.store_bits_bool(account.last_trans_hash_)    // last_trans_hash:bits256
 						&& cb.store_long_bool(account.last_trans_lt_, 64)  // last_trans_lt:uint64
 						&& ns_.account_dict_->set_builder(account.addr, cb, vm::Dictionary::SetMode::Replace))) {
-				return fatal_error(std::string{"cannot modify existing account "} + account.addr.to_hex() +
-													 " in ShardAccounts");
+				return fatal_error(std::string{"cannot modify existing account "} + account.addr.to_hex() + " in ShardAccounts");
 			}
 		}
 	}
 
 	block::gen::HASH_UPDATE::Record hash_upd;
-	if (!tlb::type_unpack_cell(std::move(acc_blk.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd)) {
+	if(!tlb::type_unpack_cell(std::move(acc_blk.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd))
 		return reject_query("cannot extract (HASH_UPDATE Account) from the AccountBlock of "s + account.addr.to_hex());
-	}
 	block::tlb::ShardAccount::Record old_state, new_state;
-	if (!(old_state.unpack(ps_.account_dict_->lookup(account.addr)) &&
-				new_state.unpack(ns_.account_dict_->lookup(account.addr)))) {
+	if (!(old_state.unpack(ps_.account_dict_->lookup(account.addr)) && new_state.unpack(ns_.account_dict_->lookup(account.addr))))
 		return reject_query("cannot extract Account from the ShardAccount of "s + account.addr.to_hex());
-	}
-	if (hash_upd.old_hash != old_state.account->get_hash().bits()) {
-		return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + account.addr.to_hex() +
-												" has incorrect old hash");
-	}
-	if (hash_upd.new_hash != new_state.account->get_hash().bits()) {
-		return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + account.addr.to_hex() +
-												" has incorrect new hash");
-	}
+	if(hash_upd.old_hash != old_state.account->get_hash().bits())
+		return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + account.addr.to_hex() + " has incorrect old hash");
+	if(hash_upd.new_hash != new_state.account->get_hash().bits())
+		return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + account.addr.to_hex() + " has incorrect new hash");
 
 	return true;
 }
@@ -4969,16 +4684,12 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
  * @returns True if all transactions pass the check, False otherwise.
  */
 bool ContestValidateQuery::check_transactions() {
-	ns_.account_dict_ =
-			std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
-	//TODO: replace with check_for_each
-	bool ok = account_blocks_dict_->check_for_each_extra(
-			[this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
-				CHECK(key_len == 256);
-				return check_account_transactions(key, std::move(value));
+	PROFILER("check_transactions");
+	ns_.account_dict_ = std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
+	return account_blocks_dict_->check_for_each(
+			[this](Ref<vm::CellSlice> value, td::ConstBitPtr key, int) {
+				return block::tlb::aug_ShardAccountBlocks.extract_extra(value.write()).not_null() && check_account_transactions(key, std::move(value));
 			});
-
-	return ok;
 }
 
 /**
@@ -4992,8 +4703,8 @@ bool ContestValidateQuery::check_message_processing_order() {
 	// New rule:
 	// If message was taken from dispatch queue, instead of created_lt use emitted_lt
 	std::sort(msg_proc_lt_.begin(), msg_proc_lt_.end());
-	for (std::size_t i = 1; i < msg_proc_lt_.size(); i++) {
-		auto &a = msg_proc_lt_[i - 1], &b = msg_proc_lt_[i];
+	for(std::size_t i = 1; i < msg_proc_lt_.size(); ++i) {
+		const auto &a = msg_proc_lt_[i - 1], &b = msg_proc_lt_[i];
 		if (std::get<0>(a) == std::get<0>(b) && std::get<2>(a) > std::get<2>(b)) {
 			return reject_query(PSTRING() << "incorrect message processing order: transaction (" << std::get<1>(a) << ","
 																		<< std::get<0>(a).to_hex() << ") processes message created at logical time "
@@ -5006,7 +4717,7 @@ bool ContestValidateQuery::check_message_processing_order() {
 	// Check that if messages m1 and m2 with the same source have m1.created_lt < m2.created_lt then
 	// m1.emitted_lt < m2.emitted_lt.
 	std::sort(msg_emitted_lt_.begin(), msg_emitted_lt_.end());
-	for (std::size_t i = 1; i < msg_emitted_lt_.size(); i++) {
+	for(std::size_t i = 1; i < msg_emitted_lt_.size(); i++) {
 		auto &a = msg_emitted_lt_[i - 1], &b = msg_emitted_lt_[i];
 		if (std::get<0>(a) == std::get<0>(b) && std::get<2>(a) >= std::get<2>(b)) {
 			return reject_query(PSTRING() << "incorrect deferred message processing order for sender "
@@ -5108,19 +4819,12 @@ bool ContestValidateQuery::postcheck_value_flow() {
 
 Ref<vm::Cell> ContestValidateQuery::get_virt_state_root(td::Bits256 block_root_hash) {
 	auto it = virt_roots_.find(block_root_hash);
-	if (it == virt_roots_.end()) {
-		return {};
-	}
+	if(it == virt_roots_.end()) return {};
 	Ref<vm::Cell> root = it->second;
 	block::gen::Block::Record block;
-	if (!tlb::unpack_cell(root, block)) {
-		return {};
-	}
+	if(!tlb::unpack_cell(root, block)) return {};
 	vm::CellSlice upd_cs{vm::NoVmSpec(), block.state_update};
-	if (!(upd_cs.is_special() && upd_cs.prefetch_long(8) == 4  // merkle update
-				&& upd_cs.size_ext() == 0x20228)) {
-		return {};
-	}
+	if(!(upd_cs.is_special() && upd_cs.prefetch_long(8) == 4 && upd_cs.size_ext() == 0x20228)) return {};
 	return vm::MerkleProof::virtualize_raw(upd_cs.prefetch_ref(1), {0, 1});
 }
 
@@ -5130,9 +4834,8 @@ Ref<vm::Cell> ContestValidateQuery::get_virt_state_root(td::Bits256 block_root_h
  * @returns True if the validation is successful, False otherwise.
  */
 bool ContestValidateQuery::try_validate() {
-	if(pending) {
-		return true;
-	}
+	PROFILER("try_validate");
+	if(pending) return true;
 	try {
 		if(!stage_) {
 			if(!compute_prev_state()) return fatal_error("cannot compute previous state");
@@ -5189,9 +4892,7 @@ bool ContestValidateQuery::try_validate() {
 		if (!check_in_queue()) {
 			return reject_query("cannot check inbound message queues");
 		}
-		if (!check_transactions()) {
-			return reject_query("invalid collection of account transactions in ShardAccountBlocks");
-		}
+		if(!check_transactions()) return reject_query("invalid collection of account transactions in ShardAccountBlocks");
 		if (!postcheck_account_updates()) {
 			return reject_query("invalid AccountState update");
 		}
@@ -5204,9 +4905,7 @@ bool ContestValidateQuery::try_validate() {
 		if (!postcheck_value_flow()) {
 			return reject_query("new ValueFlow is invalid");
 		}
-		if (!build_state_update()) {
-			return reject_query("cannot build state update");
-		}
+		if(!build_state_update()) return reject_query("cannot build state update");
 	} catch (vm::VmError& err) {
 		return fatal_error(err.get_msg());
 	} catch (vm::VmVirtError& err) {
@@ -5222,27 +4921,21 @@ bool ContestValidateQuery::try_validate() {
  * @return True on success, False on error.
  */
 bool ContestValidateQuery::build_state_update() {
+	PROFILER("build_state_update");
 	td::Ref<vm::Cell> msg_q_info;
 	{
 		vm::CellBuilder cb;
-		// out_msg_queue_extra#0 dispatch_queue:DispatchQueue out_queue_size:(Maybe uint48) = OutMsgQueueExtra;
-		// ... extra:(Maybe OutMsgQueueExtra)
-		if (!(cb.store_long_bool(1, 1) && cb.store_long_bool(0, 4) && ns_.dispatch_queue_->append_dict_to_bool(cb))) {
+		if(!(cb.store_long_bool(1, 1) && cb.store_long_bool(0, 4) && ns_.dispatch_queue_->append_dict_to_bool(cb)))
 			return false;
-		}
-		if (!(cb.store_bool_bool(true) && ns_.out_msg_queue_size_ &&
-					cb.store_long_bool(ns_.out_msg_queue_size_.value(), 48))) {
+		if(!(cb.store_bool_bool(true) && ns_.out_msg_queue_size_ && cb.store_long_bool(ns_.out_msg_queue_size_.value(), 48)))
 			return false;
-		}
 		vm::CellSlice maybe_extra = cb.as_cellslice();
 		cb.reset();
 		bool ok = ns_.out_msg_queue_->append_dict_to_bool(cb)                  // _ out_queue:OutMsgQueue
 							&& cb.append_cellslice_bool(extra_collated_data_.proc_info)  // proc_info:ProcessedInfo
 							&& cb.append_cellslice_bool(maybe_extra)                     // extra:(Maybe OutMsgQueueExtra)
 							&& cb.finalize_to(msg_q_info);
-		if (!ok) {
-			return false;
-		}
+		if(!ok) return false;
 	}
 
 	td::Ref<vm::Cell> state_root;
@@ -5273,10 +4966,12 @@ bool ContestValidateQuery::build_state_update() {
 		return fatal_error("cannot create new ShardState");
 	}
 
-	auto state_update = vm::MerkleUpdate::generate(prev_state_root_, state_root, state_usage_tree_.get());
-	if (state_update.is_null()) {
-		return fatal_error("failed to generate Merkle update");
-	}
+	if(prev_state_root_->get_level() || state_root->get_level()) return fatal_error("non zero state level");
+	// TODO: Critic function
+	auto [a, b] = vm::MerkleUpdate::generate_raw(std::move(prev_state_root_), std::move(state_root), state_usage_tree_.get());
+	if(a.is_null() || b.is_null()) return fatal_error("failed to generate Merkle update");
+	auto state_update = vm::CellBuilder::create_merkle_update(a, b);
+	if(state_update.is_null()) return fatal_error("failed to generate Merkle update");
 	result_state_update_ = vm::std_boc_serialize(state_update).move_as_ok();
 	return true;
 }
