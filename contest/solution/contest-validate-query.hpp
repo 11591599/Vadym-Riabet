@@ -1,6 +1,5 @@
 #pragma once
 
-#include "interfaces/validator-manager.h"
 #include "vm/cells.h"
 #include "vm/dict.h"
 #include "block/mc-config.h"

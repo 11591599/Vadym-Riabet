@@ -10,7 +10,6 @@
 #include "mc-config.h"
 #include "td/utils/filesystem.h"
 #include "td/utils/port/path.h"
-#include "terminal/terminal.h"
 #include "vm/cells/MerkleProof.h"
 #include "ton/ton-tl.hpp"
 #include "block-auto.h"

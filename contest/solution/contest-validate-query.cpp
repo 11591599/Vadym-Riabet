@@ -1,6 +1,5 @@
 #include "contest-validate-query.hpp"
 #include "top-shard-descr.hpp"
-#include "validator-set.hpp"
 #include "adnl/utils.hpp"
 #include "ton/ton-tl.hpp"
 #include "ton/ton-io.hpp"
@@ -16,7 +15,7 @@
 #include "fabric.h"
 #include "deserialize.hpp"
 #include "profile.hpp"
-#include <ctime>
+#include "transaction.hpp"
 
 namespace solution {
 
@@ -3353,11 +3352,10 @@ bool ContestValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice>
 			}
 		}
 		// if a message is created by a transaction, it must have source inside the current shard
-		if (transaction.not_null() && !ton::shard_contains(shard_, src_prefix)) {
+		if (transaction.not_null() && !ton::shard_contains(shard_, src_prefix))
 			return reject_query("outbound internal message with hash "s + key.to_hex(256) + " has source address " +
-													src_prefix.to_str() +
-													"... not in this shard, but it has been created here by a Transaction nonetheless");
-		}
+								src_prefix.to_str() +
+								"... not in this shard, but it has been created here by a Transaction nonetheless");
 		src = std::move(info.src);
 		dest = std::move(info.dest);
 		// unpack complete source address if it is inside this shard
@@ -3376,11 +3374,9 @@ bool ContestValidateQuery::check_out_msg(td::ConstBitPtr key, Ref<vm::CellSlice>
 
 	if (transaction.not_null()) {
 		// check that the transaction reference is valid, and that it points to a Transaction which indeed creates this outbound internal message
-		if (!is_valid_transaction_ref(transaction)) {
-			return reject_query(
-					"OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
-					" contains an invalid Transaction reference (transaction not in the block's transaction list)");
-		}
+		if(!is_valid_transaction_ref(transaction))
+			return reject_query("OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
+								" contains an invalid Transaction reference (transaction not in the block's transaction list)");
 		if (!block::is_transaction_out_msg(transaction, msg)) {
 			return reject_query("OutMsg corresponding to outbound message with key "s + key.to_hex(256) +
 													" refers to transaction that does not create this outbound message");
@@ -4352,53 +4348,49 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 	}
 	// check transaction computation by re-doing it
 	// similar to Collator::create_ordinary_transaction() and Collator::create_ticktock_transaction()
-	std::unique_ptr<block::transaction::Transaction> trs = std::make_unique<block::transaction::Transaction>(account, trans_type, lt, now_, in_msg_root);
+	MyTransaction trs(account, trans_type, lt, now_, in_msg_root);
 	if(in_msg_root.not_null()) {
-		if(!trs->unpack_input_msg(ihr_delivered, &action_phase_cfg_))
+		if(!trs.unpack_input_msg(ihr_delivered, &action_phase_cfg_))
 			// inbound external message was not accepted
 			return reject_query(PSTRING() << "could not unpack inbound " << (external ? "external" : "internal")
 											<< " message processed by ordinary transaction " << lt << " of account "
 											<< addr.to_hex());
 	}
-	if(trs->bounce_enabled) {
-		if(!trs->prepare_storage_phase(storage_phase_cfg_, true))
+	if(trs.bounce_enabled) {
+		if(!trs.prepare_storage_phase(storage_phase_cfg_, true))
 			return reject_query(PSTRING() << "cannot re-create storage phase of transaction " << lt << " for smart contract " << addr.to_hex());
-		if(need_credit_phase && !trs->prepare_credit_phase())
+		if(need_credit_phase && !trs.prepare_credit_phase())
 			return reject_query(PSTRING() << "cannot create re-credit phase of transaction " << lt << " for smart contract " << addr.to_hex());
 	} else {
-		if(need_credit_phase && !trs->prepare_credit_phase())
+		if(need_credit_phase && !trs.prepare_credit_phase())
 			return reject_query(PSTRING() << "cannot re-create credit phase of transaction " << lt << " for smart contract " << addr.to_hex());
-		if(!trs->prepare_storage_phase(storage_phase_cfg_, true, need_credit_phase))
+		if(!trs.prepare_storage_phase(storage_phase_cfg_, true, need_credit_phase))
 			return reject_query(PSTRING() << "cannot re-create storage phase of transaction " << lt << " for smart contract " << addr.to_hex());
 	}
-	if(!trs->prepare_compute_phase(compute_phase_cfg_))
+	if(!trs.prepare_compute_phase(compute_phase_cfg_))
 		return reject_query(PSTRING() << "cannot re-create compute phase of transaction " << lt << " for smart contract " << addr.to_hex());
-	if(!trs->compute_phase->accepted) {
+	if(!trs.compute_phase->accepted) {
 		if(external)
 			return reject_query(PSTRING() << "inbound external message claimed to be processed by ordinary transaction " << lt
 											<< " of account " << addr.to_hex()
 											<< " was in fact rejected (such transaction cannot appear in valid blocks)");
-		if(trs->compute_phase->skip_reason == block::ComputePhase::sk_none)
+		if(trs.compute_phase->skip_reason == block::ComputePhase::sk_none)
 			return reject_query(PSTRING() << "inbound internal message processed by ordinary transaction " << lt << " of account " << addr.to_hex() << " was not processed without any reason");
 	}
-	{
-		PROFILER("prep_action_phase");
-	if(trs->compute_phase->success && !trs->prepare_action_phase(action_phase_cfg_))
-		return reject_query(PSTRING() << "cannot re-create action phase of transaction " << lt << " for smart contract " << addr.to_hex());
-	}
-	if (trs->bounce_enabled &&
-			(!trs->compute_phase->success || trs->action_phase->state_exceeds_limits || trs->action_phase->bounce) &&
-			!trs->prepare_bounce_phase(action_phase_cfg_)) {
+	trs.prepare_action_phase(action_phase_cfg_);
+	if(trs.bounce_enabled &&
+			(!trs.compute_phase->success || trs.action_phase->state_exceeds_limits || trs.action_phase->bounce) &&
+			!trs.prepare_bounce_phase(action_phase_cfg_)) {
 		return reject_query(PSTRING() << "cannot re-create bounce phase of  transaction " << lt << " for smart contract " << addr.to_hex());
 	}
-	if(!trs->serialize()) return reject_query(PSTRING() << "cannot re-create the serialization of  transaction " << lt << " for smart contract " << addr.to_hex());
-	if(!trs->update_limits(*block_limit_status_, /* with_gas = */ false, /* with_size = */ false))
+	if(!trs.serialize()) return reject_query(PSTRING() << "cannot re-create the serialization of  transaction " << lt << " for smart contract " << addr.to_hex());
+	if(!trs.update_limits(*block_limit_status_, /* with_gas = */ false, /* with_size = */ false))
 		return fatal_error(PSTRING() << "cannot update block limit status to include transaction " << lt << " of account " << addr.to_hex());
 	// Collator should stop if total gas usage exceeds limits, including transactions on special accounts, but without
 	// ticktocks and mint/recover.
 	// Here Validator checks a weaker condition
-	if (!is_special_tx && !trs->gas_limit_overridden && trans_type == block::transaction::Transaction::tr_ord) {
-		(account.is_special ? total_special_gas_used_ : total_gas_used_) += trs->gas_used();
+	if (!is_special_tx && !trs.gas_limit_overridden && trans_type == block::transaction::Transaction::tr_ord) {
+		(account.is_special ? total_special_gas_used_ : total_gas_used_) += trs.gas_used();
 	}
 	if (total_gas_used_ > block_limits_->gas.hard() + compute_phase_cfg_.gas_limit) {
 		return reject_query(PSTRING() << "gas block limits are exceeded: total_gas_used > gas_limit_hard + trx_gas_limit ("
@@ -4414,7 +4406,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 									<< ", special_gas_limit=" << compute_phase_cfg_.special_gas_limit << ")");
 	}
 
-	auto trans_root2 = trs->commit(account);
+	auto trans_root2 = trs.commit(account);
 	if(trans_root2.is_null()) return reject_query(PSTRING() << "the re-created transaction " << lt << " for smart contract " << addr.to_hex() << " could not be committed");
 	// now compare the re-created transaction with the one we have
 	if(trans_root2->get_hash() != trans_root->get_hash()) {
@@ -4443,18 +4435,18 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 	if (!trans.r1.out_msgs->contents_equal(*trans2.r1.out_msgs))
 		return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex()
 										<< " is invalid: it has produced a set of outbound messages different from that listed in the transaction");
-	total_burned_ += trs->blackhole_burned;
+	total_burned_ += trs.blackhole_burned;
 	// check new balance and value flow
 	auto new_balance = account.get_balance();
 	block::CurrencyCollection total_fees;
 	if(!total_fees.validate_unpack(trans.total_fees))
 		return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex() << " has an invalid total_fees value");
-	if(old_balance + money_imported != new_balance + money_exported + total_fees + trs->blackhole_burned)
+	if(old_balance + money_imported != new_balance + money_exported + total_fees + trs.blackhole_burned)
 		return reject_query(PSTRING() << "transaction " << lt << " of " << addr.to_hex()
 										<< " violates the currency flow condition: old balance=" << old_balance.to_str()
 										<< " + imported=" << money_imported.to_str() << " does not equal new balance=" << new_balance.to_str()
 										<< " + exported=" << money_exported.to_str() << " + total_fees=" << total_fees.to_str()
-										<< (trs->blackhole_burned.is_zero() ? "" : PSTRING() << " burned=" << trs->blackhole_burned.to_str()));
+										<< (trs.blackhole_burned.is_zero() ? "" : PSTRING() << " burned=" << trs.blackhole_burned.to_str()));
 	return true;
 }
 
