@@ -11,5 +11,6 @@ struct MyTransaction : public block::transaction::Transaction {
 	int try_action_send_msg(const vm::CellSlice& cs0, block::ActionPhase& ap, const block::ActionPhaseConfig& cfg, int redoing = 0);
 	int try_action_reserve_currency(vm::CellSlice& cs, block::ActionPhase& ap, const block::ActionPhaseConfig& cfg);
 	int try_action_change_library(vm::CellSlice& cs, block::ActionPhase& ap, const block::ActionPhaseConfig& cfg);
+	td::Status check_state_limits(const block::SizeLimitsConfig& size_limits, bool update_storage_stat = true);
 	void prepare_action_phase(const block::ActionPhaseConfig& cfg);
 };
