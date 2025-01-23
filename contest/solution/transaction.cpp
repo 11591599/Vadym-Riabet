@@ -567,7 +567,7 @@ struct CellStorageStat {
 	using CellInfo = vm::CellStorageStat::CellInfo;
 	unsigned long long bits = 0;
 	unsigned long long public_cells = 0;
-	std::map<vm::Cell::Hash, CellInfo> seen;
+	std::unordered_set<vm::Cell::Hash> seen;
 
 	void clear() {
 		bits = public_cells = 0;
@@ -576,13 +576,9 @@ struct CellStorageStat {
 
 	td::Result<CellInfo> add_used_storage(td::Ref<vm::Cell> cell) {
 		if(cell.is_null()) return td::Status::Error("cell is null");
-		{PROFILER("SEEN");
-		if(!seen.emplace(cell->get_hash(), CellInfo{}).second) return CellInfo{};
-		}
+		if(!seen.emplace(cell->get_hash()).second) return CellInfo{};
 		vm::CellSlice cs;
-		{PROFILER("CS");
 		cs = {vm::NoVm{}, std::move(cell)};
-		}
 		bits += cs.size();
 		CellInfo res;
 		while(cs.size_refs()) {
@@ -597,6 +593,7 @@ struct CellStorageStat {
 	}
 };
 
+// optimized
 td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size_limits, bool update_storage_stat) {
 	PROFILER("check_state_limits");
 	auto cell_equal = [](const td::Ref<vm::Cell>& a, const td::Ref<vm::Cell>& b) -> bool {
@@ -607,15 +604,7 @@ td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size
 	if(cell_equal(account.code, new_code) && cell_equal(account.data, new_data) && cell_equal(account.library, new_library))
 		return td::Status::OK();
 	CellStorageStat storage_stat;
-  {
-	static auto perf_transaction_storage_stat_a = td::NamedPerfCounter::get_default().get_counter(td::Slice("transaction_storage_stat_a"));
-	auto scoped_perf_transaction_storage_stat_a = td::NamedPerfCounter::ScopedPerfCounterRef{
-		{},
-		perf_transaction_storage_stat_a,
-		td::Clocks::rdtsc()
-	};
 	auto add_used_storage = [&](const td::Ref<vm::Cell>& cell)->td::Status {
-		PROFILER("add_used_storage");
 		if(cell.not_null()) {
 			TRY_RESULT(res, storage_stat.add_used_storage(cell));
 			if(storage_stat.bits > size_limits.max_acc_state_bits) return td::Status::Error("too many bits");
@@ -627,20 +616,18 @@ td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size
 	TRY_STATUS(add_used_storage(new_code));
 	TRY_STATUS(add_used_storage(new_data));
 	TRY_STATUS(add_used_storage(new_library));
-  }
-
-  if(acc_status != block::Account::acc_active) storage_stat.clear();
-  td::Status res;
-  if(account.is_masterchain() && !cell_equal(account.library, new_library) && get_public_libraries_count(new_library) > size_limits.max_acc_public_libraries)
-	res = td::Status::Error("too many public libraries");
-  else res = td::Status::OK();
-  if(update_storage_stat) {
-	new_storage_stat.cells = storage_stat.seen.size();
-	new_storage_stat.bits = storage_stat.bits;
-	new_storage_stat.public_cells = storage_stat.public_cells;
-	new_storage_stat.seen = std::move(storage_stat.seen);
-	new_storage_stat.clear_limit();
-  }
+	if(acc_status != block::Account::acc_active) storage_stat.clear();
+	td::Status res;
+	if(account.is_masterchain() && !cell_equal(account.library, new_library) && get_public_libraries_count(new_library) > size_limits.max_acc_public_libraries)
+		res = td::Status::Error("too many public libraries");
+	else res = td::Status::OK();
+	if(update_storage_stat) {
+		new_storage_stat.cells = storage_stat.seen.size();
+		new_storage_stat.bits = storage_stat.bits;
+		new_storage_stat.public_cells = storage_stat.public_cells;
+		new_storage_stat.seen = move(storage_stat.seen);
+		new_storage_stat.clear_limit();
+	}
   return res;
 }
 

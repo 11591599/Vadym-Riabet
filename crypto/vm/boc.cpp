@@ -1148,10 +1148,7 @@ td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(Ref<vm::
     return td::Status::Error("cell is null");
   }
   if (kill_dup) {
-    auto ins = seen.emplace(cell->get_hash(), CellInfo{});
-    if (!ins.second) {
-      return ins.first->second;
-    }
+    if(!seen.emplace(cell->get_hash()).second) return CellInfo{};
   }
   vm::CellSlice cs{vm::NoVm{}, std::move(cell)};
   return add_used_storage(std::move(cs), kill_dup, skip_count_root);
