@@ -310,7 +310,7 @@ function(Main)
         endif()
     else()
         # >> Executes at configure time.
-        SetupGitMonitoring()
+        # SetupGitMonitoring()
     endif()
 endfunction()
 

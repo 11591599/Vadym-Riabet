@@ -12,7 +12,7 @@ include(git_watcher.cmake)
 # Create a library out of the compiled post-configure file.
 add_library(git STATIC ${POST_CONFIGURE_FILE})
 target_include_directories(git PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-add_dependencies(git check_git)
+# add_dependencies(git check_git)
 
 # Prevent in-source build
 get_filename_component(TON_REAL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" REALPATH)
