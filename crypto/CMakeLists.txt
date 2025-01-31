@@ -4,6 +4,8 @@ if (NOT OPENSSL_FOUND)
   find_package(OpenSSL REQUIRED)
 endif()
 
+enable_language(CXX C ASM)
+
 set(TON_CRYPTO_CORE_SOURCE
   Ed25519.cpp
   common/bigint.cpp
@@ -22,6 +24,17 @@ set(TON_CRYPTO_CORE_SOURCE
   vm/boc.cpp
   vm/large-boc-serializer.cpp
   tl/tlblib.cpp
+  ed25519/ed25519.cpp
+  ed25519/curve25519_mehdi.cpp
+  ed25519/ed25519_sign.cpp
+  ed25519/curve25519_utils.cpp
+  ed25519/curve25519_order.cpp
+  ed25519/Mult.s
+  ed25519/Square.s
+  ed25519/Sub.s
+  ed25519/Add.s
+  ed25519/Fold.s
+  ed25519/WordMulAdd.s
 
   Ed25519.h
   common/AtomicRef.h

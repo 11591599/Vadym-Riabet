@@ -41,6 +41,8 @@
 
 #endif
 
+#include "ed25519/ed25519.h"
+
 namespace td {
 
 Ed25519::PublicKey::PublicKey(SecureString octet_string) : octet_string_(std::move(octet_string)) {
@@ -209,29 +211,32 @@ Result<SecureString> Ed25519::PrivateKey::sign(Slice data) const {
 }
 
 Status Ed25519::PublicKey::verify_signature(Slice data, Slice signature) const {
-  auto pkey = detail::X25519_key_to_PKEY(octet_string_, false);
-  if (pkey == nullptr) {
-    return Status::Error("Can't import public key");
-  }
-  SCOPE_EXIT {
-    EVP_PKEY_free(pkey);
-  };
+//   auto pkey = detail::X25519_key_to_PKEY(octet_string_, false);
+//   if (pkey == nullptr) {
+//     return Status::Error("Can't import public key");
+//   }
+//   SCOPE_EXIT {
+//     EVP_PKEY_free(pkey);
+//   };
 
-  EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
-  if (md_ctx == nullptr) {
-    return Status::Error("Can't create EVP_MD_CTX");
-  }
-  SCOPE_EXIT {
-    EVP_MD_CTX_free(md_ctx);
-  };
+//   EVP_MD_CTX *md_ctx = EVP_MD_CTX_new();
+//   if (md_ctx == nullptr) {
+//     return Status::Error("Can't create EVP_MD_CTX");
+//   }
+//   SCOPE_EXIT {
+//     EVP_MD_CTX_free(md_ctx);
+//   };
 
-  if (EVP_DigestVerifyInit(md_ctx, nullptr, nullptr, nullptr, pkey) <= 0) {
-    return Status::Error("Can't init DigestVerify");
-  }
+//   if (EVP_DigestVerifyInit(md_ctx, nullptr, nullptr, nullptr, pkey) <= 0) {
+//     return Status::Error("Can't init DigestVerify");
+//   }
 
-  if (EVP_DigestVerify(md_ctx, signature.ubegin(), signature.size(), data.ubegin(), data.size())) {
+//   if (EVP_DigestVerify(md_ctx, signature.ubegin(), signature.size(), data.ubegin(), data.size())) {
+//     return Status::OK();
+//   }
+
+  if(VerifySignature((const uint8_t*)octet_string_.data(), data.ubegin(), (uint32_t) data.size(), signature.ubegin()))
     return Status::OK();
-  }
   return Status::Error("Wrong signature");
 }
 

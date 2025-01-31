@@ -347,13 +347,12 @@ bool ContestValidateQuery::init_parse() {
  * @param res The result of the masterchain state retrieval.
  */
 void ContestValidateQuery::after_get_mc_state(td::Result<Ref<ShardState>> res) {
-	PROFILER("after_mc");
 	--pending;
-	if (res.is_error()) {
+	if(res.is_error()) {
 		fatal_error(res.move_as_error());
 		return;
 	}
-	if (!process_mc_state(Ref<MasterchainState>(res.move_as_ok()))) {
+	if(!process_mc_state(Ref<MasterchainState>(res.move_as_ok()))) {
 		fatal_error("cannot process masterchain state for "s + mc_blkid_.to_str());
 		return;
 	}
@@ -963,7 +962,6 @@ bool ContestValidateQuery::request_neighbor_queues() {
 			auto r_state = fetch_block_state(descr.blk_);
 			if(r_state.is_error()) return fatal_error(r_state.move_as_error());
 			td::actor::send_closure(actor_id(this), &ContestValidateQuery::got_neighbor_out_queue, i, r_state.ok()->message_queue());
-			// got_neighbor_out_queue(i, r_state.ok()->message_queue());
 			++i;
 		}
 	}
@@ -978,26 +976,23 @@ bool ContestValidateQuery::request_neighbor_queues() {
  * @param res The obtained outbound queue.
  */
 void ContestValidateQuery::got_neighbor_out_queue(int i, td::Result<Ref<MessageQueue>> res) {
-	PROFILER("neighbor_out_queue");
 	--pending;
-	if (res.is_error()) {
+	if(res.is_error()) {
 		fatal_error(res.move_as_error());
 		return;
 	}
 	Ref<MessageQueue> outq_descr = res.move_as_ok();
 	block::McShardDescr& descr = neighbors_.at(i);
-	LOG(INFO) << "obtained outbound queue for neighbor #" << i << " : " << descr.shard().to_str();
-	if (outq_descr->get_block_id() != descr.blk_) {
-		LOG(DEBUG) << "outq_descr->id = " << outq_descr->get_block_id().to_str() << " ; descr.id = " << descr.blk_.to_str();
+	if(outq_descr->get_block_id() != descr.blk_) {
 		fatal_error("invalid outbound queue information returned for "s + descr.shard().to_str() + " : id or hash mismatch", -667);
 		return;
 	}
-	if (outq_descr->root_cell().is_null()) {
+	if(outq_descr->root_cell().is_null()) {
 		fatal_error("no OutMsgQueueInfo in queue info in a neighbor state");
 		return;
 	}
 	block::gen::OutMsgQueueInfo::Record qinfo;
-	if (!tlb::unpack_cell(outq_descr->root_cell(), qinfo)) {
+	if(!tlb::unpack_cell(outq_descr->root_cell(), qinfo)) {
 		fatal_error("cannot unpack neighbor output queue info");
 		return;
 	}
@@ -4409,16 +4404,11 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
 	auto trans_root2 = trs.commit(account);
 	if(trans_root2.is_null()) return reject_query(PSTRING() << "the re-created transaction " << lt << " for smart contract " << addr.to_hex() << " could not be committed");
 	// now compare the re-created transaction with the one we have
-	if(trans_root2->get_hash() != trans_root->get_hash()) {
-		std::cerr << "original transaction " << lt << " of " << addr.to_hex() << ": ";
-		block::gen::t_Transaction.print_ref(std::cerr, trans_root);
-		std::cerr << "re-created transaction " << lt << " of " << addr.to_hex() << ": ";
-		block::gen::t_Transaction.print_ref(std::cerr, trans_root2);
+	if(trans_root2->get_hash() != trans_root->get_hash())
 		return reject_query(PSTRING() << "the transaction " << lt << " of " << addr.to_hex() << " has hash "
 										<< trans_root->get_hash().to_hex()
 										<< " different from that of the recreated transaction "
 										<< trans_root2->get_hash().to_hex());
-	}
 	block::gen::Transaction::Record trans2;
 	block::gen::HASH_UPDATE::Record hash_upd2;
 	if (!(tlb::unpack_cell(trans_root2, trans2) && tlb::type_unpack_cell(std::move(trans2.state_update), block::gen::t_HASH_UPDATE_Account, hash_upd2)))

@@ -1,7 +1,10 @@
 #include "transaction.hpp"
 
+#include <openssl/sha.h>
+
 #include "crypto/block/block-auto.h"
 #include "crypto/block/block-parse.h"
+#include "crypto/vm/vm.h"
 #include "tdutils/td/utils/ThreadSafeCounter.h"
 #include "profile.hpp"
 
@@ -574,6 +577,7 @@ struct CellStorageStat {
 		seen.clear();
 	}
 
+	// TODO: maybe remove recursion
 	td::Result<CellInfo> add_used_storage(td::Ref<vm::Cell> cell) {
 		if(cell.is_null()) return td::Status::Error("cell is null");
 		if(!seen.emplace(cell->get_hash()).second) return CellInfo{};
@@ -593,9 +597,7 @@ struct CellStorageStat {
 	}
 };
 
-// optimized
 td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size_limits, bool update_storage_stat) {
-	PROFILER("check_state_limits");
 	auto cell_equal = [](const td::Ref<vm::Cell>& a, const td::Ref<vm::Cell>& b) -> bool {
 		if(a.is_null()) return b.is_null();
 		if(b.is_null()) return false;
@@ -801,4 +803,275 @@ void MyTransaction::prepare_action_phase(const block::ActionPhaseConfig& cfg) {
   out_msgs = std::move(ap.out_msgs);
   total_fees += ap.total_action_fees;  // NB: forwarding fees are not accounted here (they are not collected by the validators in this transaction)
   balance = ap.remaining_balance;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+
+bool MyTransaction::unpack_msg_state(const block::ComputePhaseConfig& cfg, bool lib_only, bool forbid_public_libs) {
+	block::gen::StateInit::Record state;
+	if(in_msg_state.is_null() || !tlb::unpack_cell(in_msg_state, state))
+		return false;
+	if(lib_only) {
+		in_msg_library = state.library->prefetch_ref();
+		return true;
+	}
+	new_split_depth = state.split_depth->size() == 6 ? (char)(state.split_depth->prefetch_ulong(6) - 32) : 0;
+	if(state.special->size() > 1) {
+		int z = (int) state.special->prefetch_ulong(3);
+		if(z < 0) return false;
+		new_tick = z & 2;
+		new_tock = z & 1;
+	}
+	td::Ref<vm::Cell> old_code = new_code, old_data = new_data, old_library = new_library;
+	new_code = state.code->prefetch_ref();
+	new_data = state.data->prefetch_ref();
+	new_library = state.library->prefetch_ref();
+	auto size_limits = cfg.size_limits;
+	if(forbid_public_libs) size_limits.max_acc_public_libraries = 0;
+	td::Status S = check_state_limits(size_limits, false);
+	if(S.is_error()) {
+		new_code = old_code;
+		new_data = old_data;
+		new_library = old_library;
+		return false;
+	}
+	return true;
+}
+
+td::Ref<vm::Tuple> MyTransaction::prepare_vm_c7(const block::ComputePhaseConfig& cfg) const {
+	td::BitArray<256> rand_seed;
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	SHA256_CTX sha_ctx;
+	SHA256_Init(&sha_ctx);
+	SHA256_Update(&sha_ctx, cfg.block_rand_seed.data(), 32);
+	SHA256_Update(&sha_ctx, cfg.global_version >= 8 ? account.addr.data() : account.addr_rewrite.data(), 32);
+	SHA256_Final(rand_seed.data(), &sha_ctx);
+	#pragma GCC diagnostic pop
+	td::RefInt256 rand_seed_int{true};
+	if(!rand_seed_int.unique_write().import_bits(rand_seed.cbits(), 256, false))
+		throw std::runtime_error("cannot generate valid SmartContractInfo");
+  std::vector<vm::StackEntry> tuple = {
+      td::make_refint(0x076ef1ea),                // [ magic:0x076ef1ea
+      td::zero_refint(),                          //   actions:Integer
+      td::zero_refint(),                          //   msgs_sent:Integer
+      td::make_refint(now),                       //   unixtime:Integer
+      td::make_refint(account.block_lt),          //   block_lt:Integer
+      td::make_refint(start_lt),                  //   trans_lt:Integer
+      std::move(rand_seed_int),                   //   rand_seed:Integer
+      balance.as_vm_tuple(),                      //   balance_remaining:[Integer (Maybe Cell)]
+      my_addr,                                    //   myself:MsgAddressInt
+      vm::StackEntry::maybe(cfg.global_config)    //   global_config:(Maybe Cell) ] = SmartContractInfo;
+  };
+  if(cfg.global_version >= 4) {
+    tuple.push_back(vm::StackEntry::maybe(new_code));  // code:Cell
+    if(msg_balance_remaining.is_valid()) tuple.push_back(msg_balance_remaining.as_vm_tuple());  // in_msg_value:[Integer (Maybe Cell)]
+    else tuple.push_back(block::CurrencyCollection::zero().as_vm_tuple());
+    tuple.push_back(storage_phase->fees_collected);       // storage_fees:Integer
+    tuple.push_back(vm::StackEntry::maybe(cfg.prev_blocks_info));
+	if(cfg.global_version >= 6) {
+		tuple.push_back(vm::StackEntry::maybe(cfg.unpacked_config_tuple));          // unpacked_config_tuple:[...]
+		tuple.push_back(due_payment.not_null() ? due_payment : td::zero_refint());  // due_payment:Integer
+		tuple.push_back(compute_phase->precompiled_gas_usage
+							? vm::StackEntry(td::make_refint(compute_phase->precompiled_gas_usage.value()))
+							: vm::StackEntry());  // precompiled_gas_usage:Integer
+	}
+  }
+  auto tuple_ref = td::make_cnt_ref<std::vector<vm::StackEntry>>(std::move(tuple));
+  return vm::make_tuple_ref(std::move(tuple_ref));
+}
+
+int output_actions_count(td::Ref<vm::Cell> list) {
+	int i = -1;
+	do {
+		++i;
+		bool special;
+		auto cs = vm::load_cell_slice_special(std::move(list), special);
+		if(special) break;
+		list = cs.prefetch_ref();
+	} while(list.not_null());
+	return i;
+}
+
+bool check_split_depth(const block::Account &account, int split_depth) {
+	return account.split_depth_set_ ? (split_depth == account.split_depth_) : (split_depth >= 0 && split_depth <= 30);
+}
+
+class StringLoggerTail : public td::LogInterface {
+public:
+	explicit StringLoggerTail(size_t max_size = 256) : buf(max_size, '\0') {}
+	void append(td::CSlice slice) override {
+    	if(slice.size() > buf.size()) slice.remove_prefix(slice.size() - buf.size());
+    	while(!slice.empty()) {
+    		size_t s = std::min(buf.size() - pos, slice.size());
+    		std::copy(slice.begin(), slice.begin() + s, buf.begin() + pos);
+    		pos += s;
+    		if(pos == buf.size()) {
+    		  pos = 0;
+    		  truncated = true;
+    		}
+    		slice.remove_prefix(s);
+    	}
+	}
+	std::string get_log() const {
+		if(truncated) {
+      		std::string res = buf;
+      		std::rotate(res.begin(), res.begin() + pos, res.end());
+      		return res;
+    	}
+		return buf.substr(0, pos);
+	}
+
+private:
+	std::string buf;
+	size_t pos = 0;
+	bool truncated = false;
+};
+
+bool MyTransaction::prepare_compute_phase(const block::ComputePhaseConfig& cfg) {
+	PROFILER("compute_phase");
+  compute_phase = std::make_unique<block::ComputePhase>();
+  block::ComputePhase& cp = *(compute_phase.get());
+  if(cfg.global_version >= 9) {
+	original_balance = balance;
+	if(msg_balance_remaining.is_valid()) original_balance -= msg_balance_remaining;
+  } else original_balance -= total_fees;
+  if(td::sgn(balance.grams) <= 0) {
+	cp.skip_reason = block::ComputePhase::sk_no_gas;
+	return true;
+  }
+  if(!compute_gas_limits(cp, cfg)) {
+	compute_phase.reset();
+	return false;
+  }
+  if(!cp.gas_limit && !cp.gas_credit) {
+	cp.skip_reason = block::ComputePhase::sk_no_gas;
+	return true;
+  }
+  if(in_msg_state.not_null() &&
+	  (acc_status == block::Account::acc_uninit ||
+	   (acc_status == block::Account::acc_frozen && account.state_hash == in_msg_state->get_hash().bits()))) {
+	if(acc_status == block::Account::acc_uninit && cfg.is_address_suspended(account.workchain, account.addr)) {
+	  cp.skip_reason = block::ComputePhase::sk_suspended;
+	  return true;
+	}
+	use_msg_state = true;
+	const bool forbid_public_libs = acc_status == block::Account::acc_uninit && account.is_masterchain();  // Forbid for deploying, allow for unfreezing
+	if(!(unpack_msg_state(cfg, false, forbid_public_libs) && check_split_depth(account, new_split_depth))) {
+	  cp.skip_reason = block::ComputePhase::sk_bad_state;
+	  return true;
+	}
+	if(acc_status == block::Account::acc_uninit && !check_in_msg_state_hash()) {
+	  cp.skip_reason = block::ComputePhase::sk_bad_state;
+	  return true;
+	}
+  } else if(acc_status != block::Account::acc_active) {
+	cp.skip_reason = in_msg_state.not_null() ? block::ComputePhase::sk_bad_state : block::ComputePhase::sk_no_state;
+	return true;
+  } else if (in_msg_state.not_null()) {
+	if(cfg.allow_external_unfreeze && in_msg_extern && account.addr != in_msg_state->get_hash().bits()) {
+		cp.skip_reason = block::ComputePhase::sk_bad_state;
+		return true;
+	}
+	unpack_msg_state(cfg, true);  // use only libraries
+  }
+  if(!cfg.allow_external_unfreeze && in_msg_extern && in_msg_state.not_null() && account.addr != in_msg_state->get_hash().bits()) {
+	  cp.skip_reason = block::ComputePhase::sk_bad_state;
+	  return true;
+  }
+
+  td::optional<block::PrecompiledContractsConfig::Contract> precompiled;
+  if(new_code.not_null() && trans_type == tr_ord)
+	precompiled = cfg.precompiled_contracts.get_contract(new_code->get_hash().bits());
+
+  vm::GasLimits gas{(long long)cp.gas_limit, (long long)cp.gas_max, (long long)cp.gas_credit};
+  if(precompiled) {
+	td::uint64 gas_usage = precompiled.value().gas_usage;
+	cp.precompiled_gas_usage = gas_usage;
+	if(gas_usage > cp.gas_limit) {
+		cp.skip_reason = block::ComputePhase::sk_no_gas;
+		return true;
+	}
+	auto impl = block::precompiled::get_implementation(new_code->get_hash().bits());
+	if(impl != nullptr && !cfg.dont_run_precompiled_ && impl->required_version() <= cfg.global_version)
+		return run_precompiled_contract(cfg, *impl);
+	long long limit = account.is_special ? cfg.special_gas_limit : cfg.gas_limit;
+	gas = vm::GasLimits{limit, limit, gas.gas_credit ? limit : 0};
+  }
+
+  td::Ref<vm::Stack> stack = prepare_vm_stack(cp);
+  if(stack.is_null()) {
+	compute_phase.reset();
+	return false;
+  }
+  std::unique_ptr<StringLoggerTail> logger;
+  auto vm_log = vm::VmLog();
+  if(cfg.with_vm_log) {
+	const size_t log_max_size = cfg.vm_log_verbosity > 4 ? (32 << 20) : (cfg.vm_log_verbosity > 0 ? (1 << 20) : 256);
+	logger = std::make_unique<StringLoggerTail>(log_max_size);
+	vm_log.log_interface = logger.get();
+	vm_log.log_options = td::LogOptions(VERBOSITY_NAME(DEBUG), true, false);
+	if (cfg.vm_log_verbosity > 1) {
+	  vm_log.log_mask |= vm::VmLog::ExecLocation;
+	  if (cfg.vm_log_verbosity > 2) {
+		vm_log.log_mask |= vm::VmLog::GasRemaining;
+		if (cfg.vm_log_verbosity > 3) {
+		  vm_log.log_mask |= vm::VmLog::DumpStack;
+		  if (cfg.vm_log_verbosity > 4) {
+			vm_log.log_mask |= vm::VmLog::DumpStackVerbose;
+			vm_log.log_mask |= vm::VmLog::DumpC5;
+		  }
+		}
+	  }
+	}
+  }
+  vm::VmState vm{new_code, std::move(stack), gas, 1, new_data, vm_log, compute_vm_libraries(cfg)};
+  vm.set_max_data_depth(cfg.max_vm_data_depth);
+  vm.set_global_version(cfg.global_version);
+  vm.set_c7(prepare_vm_c7(cfg));  // tuple with SmartContractInfo
+  vm.set_chksig_always_succeed(cfg.ignore_chksig);
+  vm.set_stop_on_accept_message(cfg.stop_on_accept_message);
+
+  cp.vm_init_state_hash = vm.get_state_hash();
+  cp.exit_code = ~vm.run();
+  cp.out_of_gas = (cp.exit_code == ~(int)vm::Excno::out_of_gas);
+  cp.vm_final_state_hash = vm.get_final_state_hash(cp.exit_code);
+  stack = vm.get_stack_ref();
+  cp.vm_steps = (int)vm.get_steps_count();
+  gas = vm.get_gas_limits();
+  cp.gas_used = std::min<long long>(gas.gas_consumed(), gas.gas_limit);
+  cp.accepted = (gas.gas_credit == 0);
+  cp.success = (cp.accepted && vm.committed());
+  if (cp.accepted & use_msg_state) {
+	was_activated = true;
+	acc_status = block::Account::acc_active;
+  }
+  if (precompiled) {
+	cp.gas_used = precompiled.value().gas_usage;
+	cp.vm_steps = 0;
+	cp.vm_init_state_hash = cp.vm_final_state_hash = td::Bits256::zero();
+	if (cp.out_of_gas) {
+	  return false;
+	}
+  }
+  if(logger != nullptr) cp.vm_log = logger->get_log();
+  if(cp.success) {
+	cp.new_data = vm.get_committed_state().c4;  // c4 -> persistent data
+	cp.actions = vm.get_committed_state().c5;   // c5 -> action list
+  }
+  cp.mode = 0;
+  cp.exit_arg = 0;
+  if(!cp.success && stack->depth() > 0) {
+	td::RefInt256 tos = stack->tos().as_int();
+	if(tos.not_null() && tos->signed_fits_bits(32)) cp.exit_arg = (int)tos->to_long();
+  }
+  if(cp.accepted) {
+	if(account.is_special) cp.gas_fees = td::zero_refint();
+	else {
+	  cp.gas_fees = cfg.compute_gas_price(cp.gas_used);
+	  total_fees += cp.gas_fees;
+	  balance -= cp.gas_fees;
+	}
+  }
+  return true;
 }

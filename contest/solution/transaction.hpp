@@ -13,4 +13,8 @@ struct MyTransaction : public block::transaction::Transaction {
 	int try_action_change_library(vm::CellSlice& cs, block::ActionPhase& ap, const block::ActionPhaseConfig& cfg);
 	td::Status check_state_limits(const block::SizeLimitsConfig& size_limits, bool update_storage_stat = true);
 	void prepare_action_phase(const block::ActionPhaseConfig& cfg);
+
+	bool unpack_msg_state(const block::ComputePhaseConfig& cfg, bool lib_only = false, bool forbid_public_libs = false);
+	td::Ref<vm::Tuple> prepare_vm_c7(const block::ComputePhaseConfig& cfg) const;
+	bool prepare_compute_phase(const block::ComputePhaseConfig& cfg);
 };
