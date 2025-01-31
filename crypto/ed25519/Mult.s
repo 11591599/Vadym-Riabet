@@ -136,30 +136,5 @@
 
     PopB
     ret
-
-/* _______________________________________________________________________
-/*
-/*   void ecp_Mul(U64* Z, const U64* X, const U64* Y)
-/* _______________________________________________________________________ */
-    PUBPROC ecp_Mul
-
-.equ  Z,  ARG1M
-.equ  X,  ARG2
-.equ  Y,  ARG3
-
-    PushB
-    SaveArg1
-    
-    LOADA   Y
-    LOADB   X
-
-    mulset4 0(Z), B0
-    muladd4 8(Z), B1
-    muladd4 16(Z),B2
-    muladd4 24(Z),B3
-
-    RestoreArg1
-    PopB
-    ret
     
     

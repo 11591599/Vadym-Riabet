@@ -49,22 +49,17 @@
 
 .equ C0,      %rcx
 .equ C1,      %rbx
-.equ C2,      %rdi
-.equ C3,      %rsi
-.equ C4,      %rbp
 
 .ifdef MSVC
 /* From left to right */
 .equ ARG1,    %rcx
 .equ ARG2,    %rdx
 .equ ARG3,    %r8
-.equ ARG4,    %r9
 
 /* ARG switching */
 .equ ARG1M,   %rdi
 .equ ARG2M,   %rsi
 .equ ARG3M,   %rbx
-.equ ARG4M,   %rbp
 
 .macro  SaveArg1
     push    ARG1M
@@ -93,28 +88,17 @@
     pop     ARG3M
 .endm
 
-.macro  SaveArg4
-    push    ARG4M
-    mov     ARG4,ARG4M
-.endm
-
-.macro  RestoreArg4
-    pop     ARG4M
-.endm
 .else
+
 /* From left to right */
 .equ ARG1,    %rdi
 .equ ARG2,    %rsi
 .equ ARG3,    %rdx
-.equ ARG4,    %rcx
-.equ ARG5,    %r8
-.equ ARG6,    %r9
 
 /* ARG switching */
 .equ ARG1M,   %rdi
 .equ ARG2M,   %rsi
 .equ ARG3M,   %rbx
-.equ ARG4M,   %rbp
 
 .macro  SaveArg1
 .endm
@@ -137,14 +121,6 @@
     pop     ARG3M
 .endm
 
-.macro  SaveArg4
-    push    ARG4M
-    mov     ARG4,ARG4M
-.endm
-
-.macro  RestoreArg4
-    pop     ARG4M
-.endm
 .endif
 
 .macro  PUBPROC pname
@@ -189,13 +165,6 @@
     mov     (\addr),B0
 .endm
 
-.macro  STOREB addr
-    mov     B3,24(\addr)
-    mov     B2,16(\addr)
-    mov     B1,8(\addr)
-    mov     B0,(\addr)
-.endm
-
 /* _______________________________________________________________________ 
 // 
 // Out:  Y += X 
@@ -212,10 +181,6 @@
     ADD4 A3,A2,A1,A0, \x3,\x2,\x1,\x0
 .endm
 
-.macro  ADDB x3,x2,x1,x0
-    ADD4 B3,B2,B1,B0, \x3,\x2,\x1,\x0
-.endm
-
 /* _______________________________________________________________________ 
 // 
 // Out:  Y -= X 
@@ -230,10 +195,6 @@
     
 .macro  SUBA x3,x2,x1,x0
     SUB4 A3,A2,A1,A0, \x3,\x2,\x1,\x0
-.endm
-
-.macro  SUBB x3,x2,x1,x0
-    SUB4 B3,B2,B1,B0, \x3,\x2,\x1,\x0
 .endm
 
 /* _______________________________________________________________________ 
@@ -269,16 +230,6 @@
 .endm
 
 /* _______________________________________________________________________
-//
-// IN:   a
-// Out:  ACH:ACL = a*a
-// _______________________________________________________________________ */
-.macro  SQR  a
-    mov     \a,ACL
-    mul     ACL
-.endm
-
-/* _______________________________________________________________________
 // SQRSET(u,v,a)
 // IN:   a
 // Out:  u:v = a*a
@@ -287,17 +238,6 @@
     SQR     \a
     mov     ACL,\v
     mov     ACH,\u
-.endm
-
-/* _______________________________________________________________________
-// SQRADD(u,v,a)
-// IN:   a
-// Out:  u:v += a*a
-// _______________________________________________________________________ */
-.macro  SQRADD u,v,a
-    SQR     \a
-    add     ACL,\v
-    adc     ACH,\u
 .endm
 
 /* _______________________________________________________________________
@@ -324,28 +264,5 @@
     add     \YY,ACL
     adc     $0,ACH
     add     ACL,\ZZ
-    adc     $0,ACH
-.endm
-
-/* _______________________________________________________________________
-// MULSET_W0(YY,BB,XX)
-// Out:  CARRY:Y = b*X
-// _______________________________________________________________________ */
-
-.macro  MULSET_W0 YY,BB,XX
-    MULT    \XX,\BB
-    mov     ACL,\YY
-.endm
-
-/* _______________________________________________________________________
-// MULSET_W1(YY,BB,XX)
-// Out: CARRY:Y = b*X + CARRY
-//      ZF = set if no carry
-// _______________________________________________________________________ */
-
-.macro  MULSET_W1 YY,BB,XX
-    mov     ACH,\YY
-    MULT    \XX,\BB
-    add     ACL,\YY
     adc     $0,ACH
 .endm

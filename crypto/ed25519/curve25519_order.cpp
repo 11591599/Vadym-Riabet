@@ -57,16 +57,8 @@ const U_WORD _w_NxBPO[16][K_WORDS] = {  /* n*BPO */
     W256(0x72676AE3,0x2913CE8B,0x8C82308F,0x3910A40B,1,0,0,0xF0000000)
 };
 
-/* Z = X + Y mod BPO */
-void eco_AddReduce(OUT U64 *Z, IN const U64 *X, IN const U64 *Y)
-{
-    U64 c = ecp_Add(Z, X, Y);
-    eco_ReduceHiWord(Z, c, Z);
-}
-
 /* X mod BPO */
-void eco_Mod(U64 *X)
-{
+void eco_Mod(U64 *X) {
     S64 c = ecp_Sub(X, X, _w_NxBPO[X[3] >> 60]);
     ecp_Add(X, X, _w_NxBPO[-c]);
 }

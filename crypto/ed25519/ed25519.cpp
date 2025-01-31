@@ -21,12 +21,13 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+#include "ed25519.h"
+
 #include <memory>
 #include <cstring>
 
 #include <openssl/sha.h>
 
-#include "ed25519.h"
 #include "curve25519_mehdi.h"
 #include "base_folding8.h"
 
@@ -34,8 +35,6 @@ typedef struct {
     unsigned char pk[32];
     PE_POINT q_table[16];
 } EDP_SIGV_CTX;
-
-extern const U_WORD _w_NxBPO[16][K_WORDS];
 
 #define _w_Zero     _w_base_folding8[0].T2d
 #define _w_One      _w_base_folding8[0].YpX

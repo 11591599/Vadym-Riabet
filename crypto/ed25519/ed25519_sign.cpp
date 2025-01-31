@@ -24,9 +24,6 @@
 
 #include "curve25519_mehdi.h"
 
-#include <cstdlib>
-#include <cstring>
-
 /*
  * Arithmetic on twisted Edwards curve y^2 - x^2 = 1 + dx^2y^2
  * with d = -(121665/121666) mod p
@@ -41,57 +38,15 @@
  *      l = 0x1000000000000000000000000000000014DEF9DEA2F79CD65812631A5CF5D3ED
  */
 
-extern const U_WORD _w_maxP[K_WORDS];
-extern const U_WORD _w_NxBPO[16][K_WORDS];
-
-/*
-// -- custom blind --------------------------------------------------------- 
-//
-// edp_custom_blinding is defined in source/custom_blind.c
-// source/custom_blind is created randomly on every new build
-//
-// -------------------------------------------------------------------------
-*/
-extern EDP_BLINDING_CTX edp_custom_blinding;
-
 const U_WORD _w_2d[K_WORDS] = /* 2*d */
     W256(0x26B2F159,0xEBD69B94,0x8283B156,0x00E0149A,0xEEF3D130,0x198E80F2,0x56DFFCE7,0x2406D9DC);
-
-#include "base_folding8.h"
-
-/*
-    Reference: http://eprint.iacr.org/2008/522
-    Cost: 7M + 7add
-    Return: R = P + BasePoint
-*/
-void edp_AddBasePoint(Ext_POINT *p)
-{
-    U_WORD a[K_WORDS], b[K_WORDS], c[K_WORDS], d[K_WORDS], e[K_WORDS];
-
-    ecp_SubReduce(a, p->y, p->x);           /* A = (Y1-X1)*(Y2-X2) */
-    ecp_MulReduce(a, a, _w_base_folding8[1].YmX);
-    ecp_AddReduce(b, p->y, p->x);           /* B = (Y1+X1)*(Y2+X2) */
-    ecp_MulReduce(b, b, _w_base_folding8[1].YpX);
-    ecp_MulReduce(c, p->t, _w_base_folding8[1].T2d); /* C = T1*2d*T2 */
-    ecp_AddReduce(d, p->z, p->z);           /* D = 2*Z1 */
-    ecp_SubReduce(e, b, a);                 /* E = B-A */
-    ecp_AddReduce(b, b, a);                 /* H = B+A */
-    ecp_SubReduce(a, d, c);                 /* F = D-C */
-    ecp_AddReduce(d, d, c);                 /* G = D+C */
-
-    ecp_MulReduce(p->x, e, a);              /* E*F */
-    ecp_MulReduce(p->y, b, d);              /* H*G */
-    ecp_MulReduce(p->t, e, b);              /* E*H */
-    ecp_MulReduce(p->z, d, a);              /* G*F */
-}
 
 /*
     Assumptions: pre-computed q, q->Z=1
     Cost: 7M + 7add
     Return: P = P + Q
 */
-void edp_AddAffinePoint(Ext_POINT *p, const PA_POINT *q)
-{
+void edp_AddAffinePoint(Ext_POINT *p, const PA_POINT *q) {
     U_WORD a[K_WORDS], b[K_WORDS], c[K_WORDS], d[K_WORDS], e[K_WORDS];
     ecp_SubReduce(a, p->y, p->x);           /* A = (Y1-X1)*(Y2-X2) */
     ecp_MulReduce(a, a, q->YmX);
@@ -115,8 +70,7 @@ void edp_AddAffinePoint(Ext_POINT *p, const PA_POINT *q)
     Cost: 4M + 4S + 7add
     Return: P = 2*P
 */
-void edp_DoublePoint(Ext_POINT *p)
-{
+void edp_DoublePoint(Ext_POINT *p) {
     U_WORD a[K_WORDS], b[K_WORDS], c[K_WORDS], d[K_WORDS], e[K_WORDS];
 
     ecp_SqrReduce(a, p->x);         /* A = X1^2 */
@@ -136,107 +90,6 @@ void edp_DoublePoint(Ext_POINT *p)
     ecp_MulReduce(p->y, a, d);      /* H*G */
     ecp_MulReduce(p->z, d, b);      /* G*F */
     ecp_MulReduce(p->t, e, a);      /* E*H */
-}
-
-/* -- FOLDING ---------------------------------------------------------------
-//
-//    The performance boost is achieved by a process that I call it FOLDING.
-//    Folding can be viewed as an extension of Shamir's trick but it is based
-//    on break down of the scalar multiplier of a*P into a polynomial of the
-//    form:
-//
-//        a*P = SUM(a_i*2^(i*w))*P    for i = 0,1,2,...n-1
-//
-//        a*P = SUM(a_i*P_i)
-//
-//        where P_i = (2^(i*w))*P
-//              n = number of folds
-//              w = bit-length of a_i
-//
-//    For folding of 8, 256-bit multiplier 'a' is chopped into 8 limbs of 
-//    32-bits each (a_0, a_1,...a_7). P_0 - P_7 can be pre-calculated and 
-//    their 256-different permutations can be cached or hard-coded 
-//    directly into the code.
-//    This arrangement combined with double-and-add approach reduces the 
-//    number of EC point calculations by a factor of 8. We only need 31
-//    double & add operations.
-//
-//       +---+---+---+---+---+---+- .... -+---+---+---+---+---+---+
-//  a = (|255|254|253|252|251|250|        | 5 | 4 | 3 | 2 | 1 | 0 |)
-//       +---+---+---+---+---+---+- .... -+---+---+---+---+---+---+
-//
-//                     a_i                       P_i
-//       +---+---+---+ .... -+---+---+---+    ----------
-// a7 = (|255|254|253|       |226|225|224|) * (2**224)*P
-//       +---+---+---+ .... -+---+---+---+
-// a6 = (|225|224|223|       |194|193|192|) * (2**192)*P
-//       +---+---+---+ .... -+---+---+---+
-// a5 = (|191|190|189|       |162|161|160|) * (2**160)*P
-//       +---+---+---+ .... -+---+---+---+
-// a4 = (|159|158|157|       |130|129|128|) * (2**128)*P
-//       +---+---+---+ .... -+---+---+---+
-// a3 = (|127|126|125|       | 98| 97| 96|) * (2**96)*P
-//       +---+---+---+ .... -+---+---+---+
-// a2 = (| 95| 94| 93|       | 66| 65| 64|) * (2**64)*P
-//       +---+---+---+ .... -+---+---+---+
-// a1 = (| 63| 62| 61|       | 34| 33| 32|) * (2**32)*P
-//       +---+---+---+ .... -+---+---+---+
-// a0 = (| 31| 30| 29|       | 2 | 1 | 0 |) * (2**0)*P
-//       +---+---+---+ .... -+---+---+---+
-//         |   |                   |   |
-//         |   +--+                |   +--+
-//         |      |                |      |
-//         V      V     slices     V      V
-//       +---+  +---+    ....    +---+  +---+
-//       |255|  |254|            |225|  |224|   P7
-//       +---+  +---+    ....    +---+  +---+
-//       |225|  |224|            |193|  |192|   P6
-//       +---+  +---+    ....    +---+  +---+
-//       |191|  |190|            |161|  |160|   P5
-//       +---+  +---+    ....    +---+  +---+
-//       |159|  |158|            |129|  |128|   P4
-//       +---+  +---+    ....    +---+  +---+
-//       |127|  |126|            | 97|  | 96|   P3
-//       +---+  +---+    ....    +---+  +---+
-//       | 95|  | 94|            | 65|  | 64|   P2
-//       +---+  +---+    ....    +---+  +---+
-//       | 63|  | 62|            | 33|  | 32|   P1
-//       +---+  +---+    ....    +---+  +---+
-//       | 31|  | 30|            | 1 |  | 0 |   P0
-//       +---+  +---+    ....    +---+  +---+
-// cut[]:  0      1      ....      30     31
-// --------------------------------------------------------------------------
-// Return S = a*P where P is ed25519 base point and R is random
-*/
-void edp_BasePointMult(
-    OUT Ext_POINT *S, 
-    IN const U_WORD *sk, 
-    IN const U_WORD *R)
-{
-    int i = 1;
-    U8 cut[32];
-    const PA_POINT *p0;
-
-    ecp_8Folds(cut, sk);
-
-    p0 = &_w_base_folding8[cut[0]];
-
-    ecp_SubReduce(S->x, p0->YpX, p0->YmX);  /* 2x */
-    ecp_AddReduce(S->y, p0->YpX, p0->YmX);  /* 2y */
-    ecp_MulReduce(S->t, p0->T2d, _w_di);    /* 2xy */
-
-    /* Randomize starting point */
-
-    ecp_AddReduce(S->z, R, R);              /* Z = 2R */
-    ecp_MulReduce(S->x, S->x, R);           /* X = 2xR */
-    ecp_MulReduce(S->t, S->t, R);           /* T = 2xyR */
-    ecp_MulReduce(S->y, S->y, R);           /* Y = 2yR */
-
-    do 
-    {
-        edp_DoublePoint(S);
-        edp_AddAffinePoint(S, &_w_base_folding8[cut[i]]);
-    } while (i++ < 31);
 }
 
 void edp_ExtPoint2PE(PE_POINT *r, const Ext_POINT *p)
