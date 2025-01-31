@@ -929,7 +929,6 @@ private:
 };
 
 bool MyTransaction::prepare_compute_phase(const block::ComputePhaseConfig& cfg) {
-	PROFILER("compute_phase");
   compute_phase = std::make_unique<block::ComputePhase>();
   block::ComputePhase& cp = *(compute_phase.get());
   if(cfg.global_version >= 9) {

@@ -18,7 +18,7 @@
 */
 #include "vm/cells/DataCell.h"
 
-#include "openssl/digest.hpp"
+#include <openssl/sha.h>
 
 #include "td/utils/ScopeGuard.h"
 
@@ -268,57 +268,42 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits, 
     tmp[0] = info.d1(level_mask.apply(level_i));
     tmp[1] = info.d2();
 
-    static TD_THREAD_LOCAL digest::SHA256* hasher;
-    td::init_thread_local<digest::SHA256>(hasher);
-    hasher->reset();
-
-    hasher->feed(td::Slice(tmp, 2));
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	SHA256_CTX sha_ctx;
+	SHA256_Init(&sha_ctx);
+	SHA256_Update(&sha_ctx, tmp, 2);
 
     if (hash_i == hash_i_offset) {
       DCHECK(level_i == 0 || type == SpecialType::PrunnedBranch);
-      hasher->feed(td::Slice(data_ptr, (bits + 7) >> 3));
+	  SHA256_Update(&sha_ctx, data_ptr, (bits + 7) >> 3);
     } else {
       DCHECK(level_i != 0 && type != SpecialType::PrunnedBranch);
-      hasher->feed(hashes_ptr[hash_i - hash_i_offset - 1].as_slice());
+	  SHA256_Update(&sha_ctx, hashes_ptr[hash_i - hash_i_offset - 1].as_array().begin(), hash_bytes);
     }
 
-    auto dest_i = hash_i - hash_i_offset;
+	const uint32_t level_i_ref = (type == SpecialType::MerkleProof || type == SpecialType::MerkleUpdate) ? level_i + 1 : level_i;
 
     // calc depth
     td::uint16 depth = 0;
-    for (int i = 0; i < info.refs_count_; i++) {
-      td::uint16 child_depth = 0;
-      if (type == SpecialType::MerkleProof || type == SpecialType::MerkleUpdate) {
-        child_depth = refs_ptr[i]->get_depth(level_i + 1);
-      } else {
-        child_depth = refs_ptr[i]->get_depth(level_i);
-      }
-
-      // add depth into hash
-      td::uint8 child_depth_buf[depth_bytes];
-      store_depth(child_depth_buf, child_depth);
-      hasher->feed(td::Slice(child_depth_buf, depth_bytes));
-
-      depth = std::max(depth, child_depth);
+	uint8_t child_depth_buf[max_refs * depth_bytes];
+    for(int i = 0; i < info.refs_count_; i++) {
+    	const uint16_t child_depth = refs_ptr[i]->get_depth(level_i_ref);
+		child_depth_buf[(i<<1)] = (uint8_t) (child_depth>>8);
+		child_depth_buf[(i<<1)+1] = (uint8_t) child_depth;
+    	depth = std::max(depth, child_depth);
     }
-    if (info.refs_count_ != 0) {
-      if (depth >= max_depth) {
-        return td::Status::Error("Depth is too big");
-      }
-      depth++;
-    }
+	SHA256_Update(&sha_ctx, child_depth_buf, depth_bytes * info.refs_count_);
+    if(info.refs_count_ && ++depth > max_depth)
+		return td::Status::Error("Depth is too big");
+    const uint32_t dest_i = hash_i - hash_i_offset;
     depth_ptr[dest_i] = depth;
 
     // children hash
-    for (int i = 0; i < info.refs_count_; i++) {
-      if (type == SpecialType::MerkleProof || type == SpecialType::MerkleUpdate) {
-        hasher->feed(refs_ptr[i]->get_hash(level_i + 1).as_slice());
-      } else {
-        hasher->feed(refs_ptr[i]->get_hash(level_i).as_slice());
-      }
-    }
-    auto extracted_size = hasher->extract(hashes_ptr[dest_i].as_slice());
-    DCHECK(extracted_size == hash_bytes);
+    for (int i = 0; i < info.refs_count_; i++)
+		SHA256_Update(&sha_ctx, refs_ptr[i]->get_hash(level_i_ref).as_array().begin(), hash_bytes);
+	SHA256_Final(const_cast<uint8_t*>(hashes_ptr[dest_i].as_array().begin()), &sha_ctx);
+	#pragma GCC diagnostic pop
   }
 
   return Ref<DataCell>(data_cell.release(), Ref<DataCell>::acquire_t{});
