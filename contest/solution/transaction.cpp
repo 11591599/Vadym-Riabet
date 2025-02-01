@@ -580,28 +580,31 @@ struct CellStorageStat {
 
 	// TODO: maybe remove recursion
 	bool add_used_storage(td::Ref<vm::Cell> cell) {
-		if(cell.is_null()) return false;
 		if(!seen.emplace(cell->get_hash()).second) return true;
+		std::vector<td::Ref<vm::Cell>> cells {std::move(cell)};
+		while(!cells.empty()) {
+			cell = std::move(cells.back());
+			cells.pop_back();
 
-		auto rlc = cell->load_cell();
-		vm::Cell::LoadedCell lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
-		const auto &dc = lc.data_cell;
-		const vm::Cell::SpecialType type = dc->special_type();
-		const bool isMerkle = type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate;
-		const uint32_t nrefs = dc->get_refs_cnt();
+			auto rlc = cell->load_cell();
+			vm::Cell::LoadedCell lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
+			const auto &dc = lc.data_cell;
+			uint32_t nrefs = dc->get_refs_cnt();
 
-		bits += dc->get_bits();
-		if(!nrefs) return true;
+			bits += dc->get_bits();
+			if(!nrefs) continue;
 
-		const bool usageCell = !lc.tree_node.empty();
-		if(isMerkle && lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level())
-			lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
-		uint32_t i = 0;
-		do {
-			td::Ref<vm::Cell> cr = dc->get_ref(i)->virtualize(lc.virt);
-			if(usageCell) cr = vm::UsageCell::create(std::move(cr), lc.tree_node.create_child(i));
-			if(!add_used_storage(std::move(cr))) return false;
-		} while(++i < nrefs);
+			const vm::Cell::SpecialType type = dc->special_type();
+			const bool isMerkle = type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate;
+			if(isMerkle && lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level())
+				lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
+			do {
+				--nrefs;
+				td::Ref<vm::Cell> cr = dc->get_ref(nrefs)->virtualize(lc.virt);
+				if(cr.is_null()) return false;
+				if(seen.emplace(cr->get_hash()).second) cells.emplace_back(std::move(cr));
+			} while(nrefs);
+		}
 		return true;
 	}
 };
