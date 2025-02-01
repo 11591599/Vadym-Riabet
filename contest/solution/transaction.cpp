@@ -578,7 +578,10 @@ struct CellStorageStat {
 
 	static constexpr uint32_t ERROR = uint32_t(-1);
 
-	// TODO: maybe remove recursion
+	struct MyDataCell : public vm::DataCell {
+		vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
+	};
+
 	bool add_used_storage(td::Ref<vm::Cell> cell) {
 		if(!seen.emplace(cell->get_hash()).second) return true;
 		std::vector<td::Ref<vm::Cell>> cells {std::move(cell)};
@@ -588,7 +591,7 @@ struct CellStorageStat {
 
 			auto rlc = cell->load_cell();
 			vm::Cell::LoadedCell lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
-			const auto &dc = lc.data_cell;
+			const td::Ref<MyDataCell> &dc = reinterpret_cast<td::Ref<MyDataCell>&>(lc.data_cell);
 			uint32_t nrefs = dc->get_refs_cnt();
 
 			bits += dc->get_bits();
@@ -598,9 +601,10 @@ struct CellStorageStat {
 			const bool isMerkle = type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate;
 			if(isMerkle && lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level())
 				lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
+			vm::Cell* const* refs = dc->get_refs();
 			do {
 				--nrefs;
-				td::Ref<vm::Cell> cr = dc->get_ref(nrefs)->virtualize(lc.virt);
+				td::Ref<vm::Cell> cr(refs[nrefs]->virtualize(lc.virt));
 				if(cr.is_null()) return false;
 				if(seen.emplace(cr->get_hash()).second) cells.emplace_back(std::move(cr));
 			} while(nrefs);

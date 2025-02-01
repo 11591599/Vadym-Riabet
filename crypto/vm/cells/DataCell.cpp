@@ -309,28 +309,38 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits, 
   return Ref<DataCell>(data_cell.release(), Ref<DataCell>::acquire_t{});
 }
 
+uint32_t _get_hash_i(uint32_t mask, uint32_t level) {
+	return td::count_bits32(mask & (level-1));
+}
+
 const DataCell::Hash DataCell::do_get_hash(td::uint32 level) const {
-  auto hash_i = get_level_mask().apply(level).get_hash_i();
-  if (special_type() == SpecialType::PrunnedBranch) {
-    auto this_hash_i = get_level_mask().get_hash_i();
-    if (hash_i != this_hash_i) {
-      return reinterpret_cast<const Hash*>(info_.get_data(get_storage()) + 2)[hash_i];
-    }
-    hash_i = 0;
-  }
-  return info_.get_hashes(get_storage())[hash_i];
+	level = 1u<<level;
+	const Hash* hashes = (const Hash*) get_storage();
+	if(info_.is_special_) {
+		const uint8_t *data = ((const uint8_t*) hashes) + info_.get_data_offset();
+		if(SpecialType(*data) == SpecialType::PrunnedBranch) {
+			if(info_.level_mask_ >= level)
+				return reinterpret_cast<const Hash*>(data + 2)[_get_hash_i(info_.level_mask_, level)];
+			return hashes[0];
+		}
+	}
+	return hashes[_get_hash_i(info_.level_mask_, level)];
 }
 
 td::uint16 DataCell::do_get_depth(td::uint32 level) const {
-  auto hash_i = get_level_mask().apply(level).get_hash_i();
-  if (special_type() == SpecialType::PrunnedBranch) {
-    auto this_hash_i = get_level_mask().get_hash_i();
-    if (hash_i != this_hash_i) {
-      return load_depth(info_.get_data(get_storage()) + 2 + hash_bytes * this_hash_i + hash_i * depth_bytes);
-    }
-    hash_i = 0;
-  }
-  return info_.get_depth(get_storage())[hash_i];
+	level = 1u<<level;
+	const uint16_t* depths = info_.get_depth(get_storage());
+	if(info_.is_special_) {
+		const uint8_t *data = (const uint8_t*) (depths + info_.hash_count_);
+		if(SpecialType(*data) == SpecialType::PrunnedBranch) {
+			if(info_.level_mask_ >= level){
+				const uint8_t* const depth = data + 2 + hash_bytes * td::count_bits32(info_.level_mask_) + _get_hash_i(info_.level_mask_, level) * depth_bytes;
+				return uint16_t(depth[0]<<8) | depth[1];
+			}
+			return depths[0];
+		}
+	}
+	return depths[_get_hash_i(info_.level_mask_, level)];
 }
 
 int DataCell::serialize(unsigned char* buff, int buff_size, bool with_hashes) const {

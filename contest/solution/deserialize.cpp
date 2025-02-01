@@ -57,36 +57,6 @@ struct CellWithUniquePtrStorage : public vm::DataCell {
 	~CellWithUniquePtrStorage() { vm::DataCell::destroy_storage(storage); }
 	const char* get_storage() const { return storage; }
 	char* get_storage() { return storage; }
-
-	SpecialType special_type() const {
-		return info_.is_special_ ? SpecialType(*info_.get_data(storage)) : SpecialType::Ordinary;
-	}
-
-	inline uint32_t __get_hash_i(uint32_t level) const {
-		return LevelMask{info_.level_mask_ & (level - 1)}.get_hash_i();
-	}
-
-	const Hash do_get_hash(uint32_t level) const {
-		level = 1u << level;
-		if(info_.is_special_ && SpecialType(*info_.get_data(storage)) == SpecialType::PrunnedBranch) {
-			if(info_.level_mask_ >= level)
-				return reinterpret_cast<const Hash*>(info_.get_data(storage) + 2)[__get_hash_i(level)];
-			return info_.get_hashes(storage)[0];
-		}
-		return info_.get_hashes(storage)[__get_hash_i(level)];
-	}
-
-	uint16_t do_get_depth(uint32_t level) const {
-		level = 1u << level;
-		if(info_.is_special_ && SpecialType(*info_.get_data(storage)) == SpecialType::PrunnedBranch) {
-			if(info_.level_mask_ >= level) {
-				const uint8_t* const data = info_.get_data(storage) + 2 + hash_bytes * get_level_mask().get_hash_i() + __get_hash_i(level) * depth_bytes;
-				return uint16_t(data[0]<<8) | data[1];
-			}
-			return info_.get_depth(storage)[0];
-		}
-		return info_.get_depth(storage)[__get_hash_i(level)];
-	}
 };
 
 struct CellSerializationInfo {
