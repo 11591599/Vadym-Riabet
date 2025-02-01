@@ -314,6 +314,7 @@ uint32_t _get_hash_i(uint32_t mask, uint32_t level) {
 }
 
 const DataCell::Hash DataCell::do_get_hash(td::uint32 level) const {
+	DCHECK(level < 32);
 	level = 1u<<level;
 	const Hash* hashes = (const Hash*) get_storage();
 	if(info_.is_special_) {
@@ -328,6 +329,7 @@ const DataCell::Hash DataCell::do_get_hash(td::uint32 level) const {
 }
 
 td::uint16 DataCell::do_get_depth(td::uint32 level) const {
+	DCHECK(level < 32);
 	level = 1u<<level;
 	const uint16_t* depths = info_.get_depth(get_storage());
 	if(info_.is_special_) {

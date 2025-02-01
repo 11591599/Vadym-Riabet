@@ -174,6 +174,7 @@ class DataCell : public Cell {
   bool is_loaded() const override {
     return true;
   }
+  bool is_datacell() const override { return true; }
   LevelMask get_level_mask() const override {
     return LevelMask{info_.level_mask_};
   }

@@ -60,6 +60,7 @@ class Cell : public CellTraits {
   virtual td::uint32 get_virtualization() const = 0;
   virtual CellUsageTree::NodePtr get_tree_node() const = 0;
   virtual bool is_loaded() const = 0;
+  virtual bool is_datacell() const { return false; }
 
   // hash and level
   virtual LevelMask get_level_mask() const = 0;

@@ -589,11 +589,16 @@ struct CellStorageStat {
 			cell = std::move(cells.back());
 			cells.pop_back();
 
-			auto rlc = cell->load_cell();
-			vm::Cell::LoadedCell lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
-			const td::Ref<MyDataCell> &dc = reinterpret_cast<td::Ref<MyDataCell>&>(lc.data_cell);
-			uint32_t nrefs = dc->get_refs_cnt();
+			const MyDataCell *dc;
+			vm::Cell::LoadedCell lc;
+			if(cell->is_datacell()) dc = (const MyDataCell*) cell.get();
+			else {
+				auto rlc = cell->load_cell();
+				lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
+				dc = (const MyDataCell*) lc.data_cell.get();
+			}
 
+			uint32_t nrefs = dc->get_refs_cnt();
 			bits += dc->get_bits();
 			if(!nrefs) continue;
 
