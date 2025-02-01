@@ -157,17 +157,8 @@ int MyTransaction::try_action_reserve_currency(vm::CellSlice& cs, block::ActionP
 
 int MyTransaction::try_action_send_msg(const vm::CellSlice& cs0, block::ActionPhase& ap, const block::ActionPhaseConfig& cfg, int redoing) {
   block::gen::OutAction::Record_action_send_msg act_rec;
-  // mode:
-  // +128 = attach all remaining balance
-  // +64 = attach all remaining balance of the inbound message
-  // +32 = delete smart contract if balance becomes zero
-  // +1 = pay message fees
-  // +2 = skip if message cannot be sent
-  // +16 = bounce if action fails
   vm::CellSlice cs{cs0};
-  if (!tlb::unpack_exact(cs, act_rec)) {
-	return -1;
-  }
+  if(!tlb::unpack_exact(cs, act_rec)) return -1;
   if ((act_rec.mode & 16) && cfg.bounce_on_fail_enabled) {
 	act_rec.mode &= ~16;
 	ap.need_bounce_on_fail = true;
@@ -177,28 +168,18 @@ int MyTransaction::try_action_send_msg(const vm::CellSlice& cs0, block::ActionPh
   }
   bool skip_invalid = (act_rec.mode & 2);
   auto check_skip_invalid = [&](unsigned error_code) -> unsigned int {
-	if (skip_invalid) {
-	  if (cfg.message_skip_enabled) {
-		ap.skipped_actions++;
-	  }
+	if(skip_invalid) {
+	  if(cfg.message_skip_enabled) ap.skipped_actions++;
 	  return 0;
 	}
 	return error_code;
   };
-  // try to parse suggested message in act_rec.out_msg
   td::RefInt256 fwd_fee, ihr_fee;
   block::gen::MessageRelaxed::Record msg;
-  if (!tlb::type_unpack_cell(act_rec.out_msg, block::gen::t_MessageRelaxed_Any, msg)) {
-	return -1;
-  }
-  if (!block::tlb::validate_message_relaxed_libs(act_rec.out_msg)) {
-	LOG(DEBUG) << "outbound message has invalid libs in StateInit";
-	return -1;
-  }
-  if (redoing >= 1) {
+  if(!tlb::type_unpack_cell(act_rec.out_msg, block::gen::t_MessageRelaxed_Any, msg)) return -1;
+  if(!block::tlb::validate_message_relaxed_libs(act_rec.out_msg)) return -1;
+  if(redoing >= 1) {
 	if(msg.init->size_refs() >= 2) {
-	  // init:(Maybe (Either StateInit ^StateInit))
-	  // transform (just (left z:StateInit)) into (just (right z:^StateInit))
 	  msg.init.write().skip_first(2);
 	  vm::CellBuilder cb;
 	  td::Ref<vm::Cell> cell;
@@ -263,15 +244,9 @@ int MyTransaction::try_action_send_msg(const vm::CellSlice& cs0, block::ActionPh
   info.bounced = false;
   // have to check source address
   // it must be either our source address, or empty
-  if (!check_replace_src_addr(info.src)) {
-	LOG(DEBUG) << "invalid source address in a proposed outbound message";
-	return 35;  // invalid source address
-  }
+  if(!check_replace_src_addr(info.src)) return 35;  // invalid source address
   bool to_mc = false;
-  if (!check_rewrite_dest_addr(info.dest, cfg, &to_mc)) {
-	LOG(DEBUG) << "invalid destination address in a proposed outbound message";
-	return check_skip_invalid(36);  // invalid destination address
-  }
+  if(!check_rewrite_dest_addr(info.dest, cfg, &to_mc)) return check_skip_invalid(36);  // invalid destination address
 
   // fetch message pricing info
   const block::MsgPrices& msg_prices = cfg.fetch_msg_prices(to_mc || account.is_masterchain());
@@ -569,7 +544,7 @@ static td::uint32 get_public_libraries_count(const td::Ref<vm::Cell>& libraries)
 struct CellStorageStat {
 	using CellInfo = vm::CellStorageStat::CellInfo;
 	unsigned long long bits = 0;
-	std::unordered_set<vm::Cell::Hash> seen;
+	vm::HashSet seen;
 
 	void clear() {
 		bits = 0;
@@ -583,7 +558,7 @@ struct CellStorageStat {
 	};
 
 	bool add_used_storage(td::Ref<vm::Cell> cell) {
-		if(!seen.emplace(cell->get_hash()).second) return true;
+		if(!seen.emplace(cell->get_hash())) return true;
 		std::vector<td::Ref<vm::Cell>> cells {std::move(cell)};
 		while(!cells.empty()) {
 			cell = std::move(cells.back());
@@ -611,7 +586,7 @@ struct CellStorageStat {
 				--nrefs;
 				td::Ref<vm::Cell> cr(refs[nrefs]->virtualize(lc.virt));
 				if(cr.is_null()) return false;
-				if(seen.emplace(cr->get_hash()).second) cells.emplace_back(std::move(cr));
+				if(seen.emplace(cr->get_hash())) cells.emplace_back(std::move(cr));
 			} while(nrefs);
 		}
 		return true;
@@ -647,7 +622,7 @@ td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size
 		new_storage_stat.cells = storage_stat.seen.size();
 		new_storage_stat.bits = storage_stat.bits;
 		new_storage_stat.public_cells = 0;
-		new_storage_stat.seen = move(storage_stat.seen);
+		new_storage_stat.seen = std::move(storage_stat.seen);
 		new_storage_stat.clear_limit();
 	}
   return res;

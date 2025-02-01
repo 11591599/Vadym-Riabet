@@ -147,7 +147,7 @@ td::Result<int> LargeBocSerializer::import_cell(Hash hash, int depth) {
   dc_info.wt = (unsigned char)std::min(0xffU, sum_child_wt);
   unsigned hcnt = dc->get_level_mask().get_hashes_count();
   DCHECK(hcnt <= 4);
-  dc_info.hcnt = (unsigned char)hcnt;
+  dc_info.hcnt = hcnt & 0b111111;
   TRY_RESULT(serialized_size, td::narrow_cast_safe<unsigned short>(dc->get_serialized_size()));
   data_bytes += dc_info.serialized_size = serialized_size;
   return cell_count++;

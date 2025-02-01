@@ -23,6 +23,7 @@
 #include <map>
 #include "vm/db/DynamicBagOfCellsDb.h"
 #include "vm/cells.h"
+#include "vm/hash-set.h"
 #include "td/utils/Status.h"
 #include "td/utils/buffer.h"
 #include "td/utils/HashMap.h"
@@ -117,7 +118,7 @@ struct CellStorageStat {
   struct CellInfo {
     td::uint32 max_merkle_depth = 0;
   };
-  std::unordered_set<vm::Cell::Hash> seen;
+  HashSet seen;
   CellStorageStat() : cells(0), bits(0), public_cells(0) {
   }
   explicit CellStorageStat(unsigned long long limit_cells)
