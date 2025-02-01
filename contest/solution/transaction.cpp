@@ -569,31 +569,40 @@ static td::uint32 get_public_libraries_count(const td::Ref<vm::Cell>& libraries)
 struct CellStorageStat {
 	using CellInfo = vm::CellStorageStat::CellInfo;
 	unsigned long long bits = 0;
-	unsigned long long public_cells = 0;
 	std::unordered_set<vm::Cell::Hash> seen;
 
 	void clear() {
-		bits = public_cells = 0;
+		bits = 0;
 		seen.clear();
 	}
 
+	static constexpr uint32_t ERROR = uint32_t(-1);
+
 	// TODO: maybe remove recursion
-	td::Result<CellInfo> add_used_storage(td::Ref<vm::Cell> cell) {
-		if(cell.is_null()) return td::Status::Error("cell is null");
-		if(!seen.emplace(cell->get_hash()).second) return CellInfo{};
-		vm::CellSlice cs;
-		cs = {vm::NoVm{}, std::move(cell)};
-		bits += cs.size();
-		CellInfo res;
-		while(cs.size_refs()) {
-			td::Result<CellInfo> child = add_used_storage(cs.fetch_ref());
-			if(child.is_error()) return child.move_as_error();
-			res.max_merkle_depth = std::max(res.max_merkle_depth, child.ok().max_merkle_depth);
-		}
-		const vm::Cell::SpecialType type = cs.special_type();
-		if(type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate)
-			++res.max_merkle_depth;
-		return res;
+	bool add_used_storage(td::Ref<vm::Cell> cell) {
+		if(cell.is_null()) return false;
+		if(!seen.emplace(cell->get_hash()).second) return true;
+
+		auto rlc = cell->load_cell();
+		vm::Cell::LoadedCell lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
+		const auto &dc = lc.data_cell;
+		const vm::Cell::SpecialType type = dc->special_type();
+		const bool isMerkle = type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate;
+		const uint32_t nrefs = dc->get_refs_cnt();
+
+		bits += dc->get_bits();
+		if(!nrefs) return true;
+
+		const bool usageCell = !lc.tree_node.empty();
+		if(isMerkle && lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level())
+			lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
+		uint32_t i = 0;
+		do {
+			td::Ref<vm::Cell> cr = dc->get_ref(i)->virtualize(lc.virt);
+			if(usageCell) cr = vm::UsageCell::create(std::move(cr), lc.tree_node.create_child(i));
+			if(!add_used_storage(std::move(cr))) return false;
+		} while(++i < nrefs);
+		return true;
 	}
 };
 
@@ -608,10 +617,9 @@ td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size
 	CellStorageStat storage_stat;
 	auto add_used_storage = [&](const td::Ref<vm::Cell>& cell)->td::Status {
 		if(cell.not_null()) {
-			TRY_RESULT(res, storage_stat.add_used_storage(cell));
+			if(!storage_stat.add_used_storage(cell)) return td::Status::Error("cell is null");
 			if(storage_stat.bits > size_limits.max_acc_state_bits) return td::Status::Error("too many bits");
 			if(storage_stat.seen.size() > size_limits.max_acc_state_cells) return td::Status::Error("too many cells");
-			if(res.max_merkle_depth > max_allowed_merkle_depth) return td::Status::Error("too big merkle depth");
 		}
 		return td::Status::OK();
 	};
@@ -626,7 +634,7 @@ td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size
 	if(update_storage_stat) {
 		new_storage_stat.cells = storage_stat.seen.size();
 		new_storage_stat.bits = storage_stat.bits;
-		new_storage_stat.public_cells = storage_stat.public_cells;
+		new_storage_stat.public_cells = 0;
 		new_storage_stat.seen = move(storage_stat.seen);
 		new_storage_stat.clear_limit();
 	}
