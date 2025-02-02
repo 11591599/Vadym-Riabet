@@ -3,151 +3,100 @@
 #include "crypto/vm/cells/MerkleProof.h"
 #include "crypto/vm/cells/CellBuilder.h"
 #include "crypto/vm/cells/CellSlice.h"
-#include "crypto/vm/boc-writers.h"
-#include "crypto/vm/boc.h"
+#include "crypto/vm/hash-set.h"
 
 #include "profile.hpp"
 
-struct BOC : public vm::BagOfCells {
-	void add_root(td::Ref<vm::Cell> add_root) {
-		roots.emplace_back(std::move(add_root), -1);
-		++root_count;
-	}
+struct BOC {
+	struct CellInfo {
+		td::Ref<vm::DataCell> dc_ref;
+		std::array<int, 4> ref_idx;
+		CellInfo(td::Ref<vm::DataCell> _dc): dc_ref(std::move(_dc)) {}
+		CellInfo(td::Ref<vm::DataCell> _dc, const std::array<int, 4>& _ref_list):
+			dc_ref(std::move(_dc)), ref_idx(_ref_list) {}
+	};
+	std::vector<CellInfo> cells;
+	vm::HashMap<int> h2i;
+	int num_refs = 0;
+	uint64_t data_bytes = 0;
+	int ref_byte_size=1, offset_byte_size=1;
 
-	td::Result<int> import_cell(td::Ref<vm::Cell> cell, int depth) {
-		if(depth > max_depth) return td::Status::Error("error while importing a cell into a bag of cells: cell depth too large");
-		if(cell.is_null()) return td::Status::Error("error while importing a cell into a bag of cells: cell is null");
-		auto it = cells.find(cell->get_hash());
-		if(it != cells.end()) {
-			auto pos = it->second;
-			cell_list_[pos].should_cache = true;
-			return pos;
-		}
-		if(cell->get_virtualization())
-			return td::Status::Error("error while importing a cell into a bag of cells: cell has non-zero virtualization level");
-		auto r_loaded_dc = cell->load_cell();
-		if(r_loaded_dc.is_error())
-			return td::Status::Error("error while importing a cell into a bag of cells: " + r_loaded_dc.move_as_error().to_string());
-		auto loaded_dc = r_loaded_dc.move_as_ok();
-		vm::CellSlice cs(std::move(loaded_dc));
-		std::array<int, 4> refs{-1};
-		unsigned sum_child_wt = 1;
-		for(unsigned i = 0; i < cs.size_refs(); i++) {
-			auto ref = import_cell(cs.prefetch_ref(i), depth + 1);
-			if(ref.is_error()) return ref.move_as_error();
-			refs[i] = ref.move_as_ok();
-			sum_child_wt += cell_list_[refs[i]].wt;
-			++int_refs;
-		}
-		DCHECK(cell_list_.size() == static_cast<std::size_t>(cell_count));
-		auto dc = cs.move_as_loaded_cell().data_cell;
-		auto res = cells.emplace(dc->get_hash(), cell_count);
-		DCHECK(res.second);
-		cell_list_.emplace_back(dc, dc->size_refs(), refs);
-		CellInfo& dc_info = cell_list_.back();
-		dc_info.hcnt = static_cast<unsigned char>(dc->get_level_mask().get_hashes_count());
-		dc_info.wt = static_cast<unsigned char>(std::min(0xffU, sum_child_wt));
-		dc_info.new_idx = -1;
+	struct MyDataCell : public vm::DataCell {
+		vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
+	};
+
+	td::Result<int> import_cell(const vm::Cell *cell, int depth) {
+		if(depth > 1024) return td::Status::Error("error while importing a cell into a bag of cells: cell depth too large");
+		if(!cell) return td::Status::Error("error while importing a cell into a bag of cells: cell is null");
+		int* it = h2i.find(cell->get_hash());
+		if(it) return *it;
+		if(cell->get_virtualization()) return td::Status::Error("error while importing a cell into a bag of cells: cell has non-zero virtualization level");
+		TRY_RESULT(loaded_dc, cell->load_cell());
+		const vm::DataCell *dc = loaded_dc.data_cell.get();
 		data_bytes += dc->get_serialized_size();
-		return cell_count++;
+		const uint32_t size_refs = dc->size_refs();
+		int ind;
+		if(size_refs) {
+			num_refs += size_refs;
+			std::array<int, 4> refs;
+			vm::Cell* const* dc_refs = ((const MyDataCell*)dc)->get_refs();
+			for(uint32_t i = 0; i < size_refs; ++i) {
+				auto r = import_cell(dc_refs[i], depth+1);
+				if(r.is_error()) return r.move_as_error();
+				refs[i] = r.move_as_ok();
+			}
+			ind = (int) cells.size();
+			cells.emplace_back(std::move(loaded_dc.data_cell), refs);
+		} else {
+			ind = (int) cells.size();
+			cells.emplace_back(std::move(loaded_dc.data_cell));
+		}
+		h2i.emplace(dc->get_hash(), ind);
+		return ind;
 	}
 
-	td::Status import_cells() {
-		for(auto& root : roots) {
-			auto res = import_cell(root.cell, 0);
-			if(res.is_error()) return res.move_as_error();
-			root.idx = res.move_as_ok();
-		}
+	td::Status import_cells(td::Ref<vm::Cell> r) {
+		auto res = import_cell(r.get(), 0);
+		if(res.is_error()) return res.move_as_error();
 		return td::Status::OK();
 	}
 
-	td::uint64 compute_sizes(int& r_size, int& o_size) {
-		int rs = 0, os = 0;
-		if(!root_count || !data_bytes) {
-			r_size = o_size = 0;
-			return 0;
-		}
-		while(cell_count >= (1LL << (rs << 3))) rs++;
-		td::uint64 data_bytes_adj = data_bytes + (unsigned long long)int_refs * rs;
-		td::uint64 max_offset = data_bytes_adj;
-		while(max_offset >= (1ULL << (os << 3))) os++;
-		if(rs > 4 || os > 8) {
-			r_size = o_size = 0;
-			return 0;
-		}
-		r_size = rs;
-		o_size = os;
-		return data_bytes_adj;
-	}
-
-	std::size_t estimate_serialized_size() {
-		auto data_bytes_adj = compute_sizes(info.ref_byte_size, info.offset_byte_size);
-		if(!data_bytes_adj) {
-			info.invalidate();
-			return 0;
-		}
-		info.valid = true;
-		info.has_crc32c = false;
-		info.has_index = false;
-		info.has_cache_bits = false;
-		info.root_count = root_count;
-		info.cell_count = cell_count;
-		info.absent_count = dangle_count;
-		info.roots_offset = 4 + 1 + 1 + 3 * info.ref_byte_size + info.offset_byte_size;
-		info.index_offset = info.roots_offset + info.root_count * info.ref_byte_size;
-		info.data_offset = info.index_offset;
-		info.magic = Info::boc_generic;
-		info.data_size = data_bytes_adj;
-		return info.total_size = info.data_offset + data_bytes_adj;
-	}
-
-	template <typename WriterT>
-	td::Result<std::size_t> serialize_to_impl(WriterT& writer) {
-		auto store_ref = [&](unsigned long long value) { writer.store_uint(value, info.ref_byte_size); };
-		auto store_offset = [&](unsigned long long value) { writer.store_uint(value, info.offset_byte_size); };
-		writer.store_uint(info.magic, 4);
-		td::uint8 byte{0};
-		if(info.ref_byte_size < 1 || info.ref_byte_size > 7) return 0;
-		byte |= static_cast<td::uint8>(info.ref_byte_size);
-		writer.store_uint(byte, 1);
-		writer.store_uint(info.offset_byte_size, 1);
-		store_ref(cell_count);
-		store_ref(root_count);
-		store_ref(0);
-		store_offset(info.data_size);
-		for (const auto& root_info : roots) {
-			int k = cell_count - 1 - root_info.idx;
-			DCHECK(k >= 0 && k < cell_count);
-			store_ref(k);
-		}
-		DCHECK(writer.position() == info.index_offset);
-		DCHECK((unsigned)cell_count == cell_list_.size());
-		DCHECK(writer.position() == info.data_offset);
-		size_t keep_position = writer.position();
-		for (int i = 0; i < cell_count; ++i) {
-			const auto& dc_info = cell_list_[cell_count - 1 - i];
-			const td::Ref<vm::DataCell>& dc = dc_info.dc_ref;
-			unsigned char buf[256];
-			int s = dc->serialize(buf, 256, false);
-			writer.store_bytes(buf, s);
-			DCHECK(dc->size_refs() == dc_info.ref_num);
-			for (unsigned j = 0; j < dc_info.ref_num; ++j) {
-				int k = cell_count - 1 - dc_info.ref_idx[j];
-				DCHECK(k > i && k < cell_count);
-				store_ref(k);
+	td::Result<td::BufferSlice> serialize() {
+		while(cells.size() >= (1ULL << (ref_byte_size << 3))) ++ref_byte_size;
+		const uint64_t data_size = data_bytes + (uint64_t)num_refs * ref_byte_size;
+		while(data_size >= (1ULL << (offset_byte_size << 3))) ++offset_byte_size;
+		if(ref_byte_size > 4 || offset_byte_size > 8) return td::Status::Error("size of refs or offsets too big");
+		const uint64_t total_size = 4 + 1 + 1 + 3 * ref_byte_size + offset_byte_size + ref_byte_size + data_size;
+		td::BufferSlice res(total_size);
+		uint8_t* buff = (uint8_t*) res.data();
+		const uint8_t* buff_end = buff + total_size;
+		const auto store_uint = [&](uint64_t value, uint32_t bytes) {
+			uint8_t* ptr = buff += bytes;
+			while(bytes--) {
+				*--ptr = value & 0xff;
+				value >>= 8;
 			}
+		};
+		const auto store_ref = [&](uint64_t value) { store_uint(value, ref_byte_size); };
+		const auto store_offset = [&](uint64_t value) { store_uint(value, offset_byte_size); };
+		store_uint(0xb5ee9c72u, 4);
+		store_uint(ref_byte_size, 1);
+		store_uint(offset_byte_size, 1);
+		store_ref(cells.size());
+		store_ref(1);
+		store_ref(0);
+		store_offset(data_size);
+		store_ref(0);
+		for(int i = 0; i < (int) cells.size(); ++i) {
+			const auto& dc_info = cells[cells.size() - 1 - i];
+			const td::Ref<vm::DataCell>& dc = dc_info.dc_ref;
+			buff += dc->serialize(buff, int(buff_end - buff), false);
+			const uint32_t size_refs = dc_info.dc_ref->size_refs();
+			for(uint32_t j = 0; j < size_refs; ++j)
+				store_ref((int) cells.size() - 1 - dc_info.ref_idx[j]);
 		}
-		writer.chk();
-		DCHECK(writer.position() - keep_position == info.data_size);
-		DCHECK(writer.empty());
-		return writer.position();
-	}
-
-	td::Result<std::size_t> serialize_to(unsigned char* buffer, std::size_t buff_size) {
-		std::size_t size_est = estimate_serialized_size();
-		if(!size_est || size_est > buff_size) return 0;
-		vm::boc_writers::BufferWriter writer{buffer, buffer + size_est};
-		return serialize_to_impl(writer);
+		DCHECK(buff == buff_end);
+		return res;
 	}
 };
 
@@ -176,13 +125,6 @@ td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td:
 	if(state_update.is_null()) return td::Status::Error("failed to generate Merkle update");
 
 	BOC boc;
-	boc.add_root(std::move(state_update));
-	TRY_STATUS(boc.import_cells());
-
-	std::size_t size_est = boc.estimate_serialized_size();
-	if(!size_est) return td::Status::Error("no cells to serialize to this bag of cells");
-	td::BufferSlice res(size_est);
-	TRY_RESULT(size, boc.serialize_to(const_cast<unsigned char*>(reinterpret_cast<const unsigned char*>(res.data())), res.size()));
-	if(size == res.size()) return std::move(res);
-	return td::Status::Error("error while serializing a bag of cells: actual serialized size differs from estimated");
+	TRY_STATUS(boc.import_cells(std::move(state_update)));
+	return boc.serialize();
 }
