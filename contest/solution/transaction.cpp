@@ -629,7 +629,6 @@ td::Status MyTransaction::check_state_limits(const block::SizeLimitsConfig& size
 }
 
 void MyTransaction::prepare_action_phase(const block::ActionPhaseConfig& cfg) {
-	PROFILER("prep_action_phase");
 	if(!compute_phase || !compute_phase->success) return;
 	action_phase = std::make_unique<block::ActionPhase>();
 	block::ActionPhase& ap = *(action_phase.get());

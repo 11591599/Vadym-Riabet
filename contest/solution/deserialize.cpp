@@ -46,15 +46,15 @@ struct CellSliceInfo {
 	}
 };
 
-struct CellWithUniquePtrStorage : public vm::DataCell {
+struct CellWithStorage : public vm::DataCell {
 	using vm::DataCell::Info;
 	constexpr static int STORAGE_SIZE = 228;
 	inline thread_local static std::vector<char> BIG_STORAGE;
 	inline thread_local static char* NEXT_STORAGE = nullptr;
 	char* storage;
-	CellWithUniquePtrStorage(const Info &info, char* n_storage):
+	CellWithStorage(const Info &info, char* n_storage):
 		vm::DataCell(info), storage(NEXT_STORAGE) { NEXT_STORAGE = n_storage; }
-	~CellWithUniquePtrStorage() { vm::DataCell::destroy_storage(storage); }
+	~CellWithStorage() { vm::DataCell::destroy_storage(storage); }
 	const char* get_storage() const { return storage; }
 	char* get_storage() { return storage; }
 };
@@ -84,7 +84,7 @@ struct CellSerializationInfo {
 		end_offset = refs_offset + refs_cnt * ref_byte_size;
 	}
 
-	td::Ref<vm::Cell> create_data_cell(const uint8_t* cell_slice, const std::array<const vm::Cell*, 4> &refs) const {
+	vm::Cell* create_data_cell(const uint8_t* cell_slice, const std::array<const vm::Cell*, 4> &refs) const {
 		const uint8_t* const data = cell_slice + data_offset;
 		const vm::Cell::SpecialType type = special ? static_cast<vm::Cell::SpecialType>(data[0])
 										: vm::Cell::SpecialType::Ordinary;
@@ -114,7 +114,7 @@ struct CellSerializationInfo {
 			hash_count = level_mask.get_hashes_count();
 			hash_i_offset = 0;
 		}
-		CellWithUniquePtrStorage::Info info;
+		CellWithStorage::Info info;
 		info.bits_ = data_len * 8;
 		if(data_with_bits) info.bits_ -= 1 + td::count_trailing_zeroes32(data[data_len - 1]);
 		info.refs_count_ = refs_cnt & 0b111;
@@ -123,17 +123,14 @@ struct CellSerializationInfo {
 		info.hash_count_ = hash_count & 0b111;
 		info.virtualization_ = 0;
 		// init data
-		vm::Cell::Hash* hashes_ptr = (vm::Cell::Hash*) CellWithUniquePtrStorage::NEXT_STORAGE;
+		vm::Cell::Hash* hashes_ptr = (vm::Cell::Hash*) CellWithStorage::NEXT_STORAGE;
 		const vm::Cell** refs_ptr = (const vm::Cell**) (hashes_ptr + hash_count);
 		uint16_t* depth_ptr = (uint16_t*) (refs_ptr + refs_cnt);
 		uint8_t* data_ptr = (uint8_t*) (depth_ptr + hash_count);
 		std::memcpy(data_ptr, data, data_len);
-		CellWithUniquePtrStorage *data_cell = new CellWithUniquePtrStorage(info, (char*) data_ptr + data_len);
+		CellWithStorage *data_cell = new CellWithStorage(info, (char*) data_ptr + data_len);
 		// init refs
-		for(int i = 0; i < refs_cnt; ++i) {
-			refs_ptr[i] = refs[i];
-			td::Ref<vm::Cell>::acquire_shared(refs[i]);
-		}
+		std::memcpy(refs_ptr, refs.data(), refs_cnt * sizeof(vm::Cell*));
 		uint8_t tmp[2];
 		tmp[1] = info.d2();
 		for(td::uint32 level_i = 0, hash_i = 0, level = level_mask.get_level(); level_i <= level; ++level_i) {
@@ -171,7 +168,7 @@ struct CellSerializationInfo {
 			#pragma GCC diagnostic pop
 			++hash_i;
 		}
-		return td::Ref<vm::Cell>(data_cell, td::Ref<vm::Cell>::acquire_t{});
+		return data_cell;
 	}
 };
 
@@ -193,10 +190,10 @@ std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
 		}
 	}
 
-	if(const size_t desired_size = CellWithUniquePtrStorage::STORAGE_SIZE * info.cell_count; CellWithUniquePtrStorage::BIG_STORAGE.size() < desired_size)
-		CellWithUniquePtrStorage::BIG_STORAGE.resize(desired_size);
-	CellWithUniquePtrStorage::NEXT_STORAGE = CellWithUniquePtrStorage::BIG_STORAGE.data();
-	std::vector<td::Ref<vm::Cell>> cell_list(info.cell_count);
+	if(const size_t desired_size = CellWithStorage::STORAGE_SIZE * info.cell_count; CellWithStorage::BIG_STORAGE.size() < desired_size)
+		CellWithStorage::BIG_STORAGE.resize(desired_size);
+	CellWithStorage::NEXT_STORAGE = CellWithStorage::BIG_STORAGE.data();
+	std::vector<std::pair<vm::Cell*, int>> cell_list(info.cell_count);
 	const auto get_idx_entry = [&](int index)->uint64_t {
 		uint64_t raw;
 		if(info.has_index) {
@@ -211,15 +208,22 @@ std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
 		std::array<const vm::Cell*, 4> refs;
 		CellSerializationInfo cell_info(cell_ptr, info.ref_byte_size);
 		for(int k = 0; k < cell_info.refs_cnt; k++) {
-			const int ref_idx = (int)info.read_ref(cell_ptr + cell_info.refs_offset + k * info.ref_byte_size);
-			refs[k] = cell_list[ref_idx].get();
+			auto &[c, r] = cell_list[info.read_ref(cell_ptr + cell_info.refs_offset + k * info.ref_byte_size)];
+			refs[k] = c;
+			++ r;
 		}
-		cell_list[i] = cell_info.create_data_cell(cell_ptr, refs);
+		cell_list[i].first = cell_info.create_data_cell(cell_ptr, refs);
 	}
 
 	std::vector<td::Ref<vm::Cell>> roots(info.root_count);
 	const uint8_t* roots_ptr = data.substr(info.roots_offset).ubegin();
-	for(int i = 0; i < info.root_count; ++i)
-		roots[i] = std::move(cell_list[info.read_ref(roots_ptr + i * info.ref_byte_size)]);
+	for(int i = 0; i < info.root_count; ++i) {
+		auto &[c, r] = cell_list[info.read_ref(roots_ptr)];
+		roots_ptr += info.ref_byte_size;
+		roots[i] = td::Ref<vm::Cell>(c, td::Ref<vm::Cell>::acquire_t{});
+		++ r;
+	}
+	for(const auto &[c, r] : cell_list) if(r > 1)
+		td::Ref<vm::Cell>::acquire_shared(c, r-1);
 	return roots;
 }

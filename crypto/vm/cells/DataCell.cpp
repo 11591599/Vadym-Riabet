@@ -67,10 +67,10 @@ std::unique_ptr<DataCell> DataCell::create_empty_data_cell(Info info) {
 }
 
 DataCell::DataCell(Info info) : info_(std::move(info)) {
-  get_thread_safe_counter().add(1);
+//   get_thread_safe_counter().add(1);
 }
 DataCell::~DataCell() {
-  get_thread_safe_counter().add(-1);
+//   get_thread_safe_counter().add(-1);
 }
 
 void DataCell::destroy_storage(char* storage) {

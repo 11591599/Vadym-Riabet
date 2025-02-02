@@ -143,24 +143,8 @@ td::RefInt256 PrecompiledSmartContract::get_original_fwd_fee(ton::WorkchainId wc
 
 static std::atomic_bool precompiled_execution_enabled{false};
 
-std::unique_ptr<PrecompiledSmartContract> get_implementation(td::Bits256 code_hash) {
-  if (!precompiled_execution_enabled) {
-    return nullptr;
-  }
-  static std::map<td::Bits256, std::unique_ptr<PrecompiledSmartContract> (*)()> map = []() {
-    auto from_hex = [](td::Slice s) -> td::Bits256 {
-      td::Bits256 x;
-      CHECK(x.from_hex(s) == 256);
-      return x;
-    };
-    std::map<td::Bits256, std::unique_ptr<PrecompiledSmartContract> (*)()> map;
-#define CONTRACT(hash, cls) \
-  map[from_hex(hash)] = []() -> std::unique_ptr<PrecompiledSmartContract> { return std::make_unique<cls>(); };
-    // CONTRACT("CODE_HASH_HEX", ClassName);
-    return map;
-  }();
-  auto it = map.find(code_hash);
-  return it == map.end() ? nullptr : it->second();
+std::unique_ptr<PrecompiledSmartContract> get_implementation([[maybe_unused]] td::Bits256 code_hash) {
+	return nullptr;
 }
 
 void set_precompiled_execution_enabled(bool value) {

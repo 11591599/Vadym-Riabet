@@ -4804,7 +4804,7 @@ bool ContestValidateQuery::build_state_update() {
 	// TODO: Critic function
 	auto [a, b] = vm::MerkleUpdate::generate_raw(std::move(prev_state_root_), std::move(state_root), state_usage_tree_.get());
 	if(a.is_null() || b.is_null()) return fatal_error("failed to generate Merkle update");
-	auto state_update = vm::CellBuilder::create_merkle_update(a, b);
+	auto state_update = vm::CellBuilder::create_merkle_update(std::move(a), std::move(b));
 	if(state_update.is_null()) return fatal_error("failed to generate Merkle update");
 	result_state_update_ = vm::std_boc_serialize(state_update).move_as_ok();
 	return true;
