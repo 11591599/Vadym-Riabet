@@ -577,10 +577,11 @@ struct CellStorageStat {
 			bits += dc->get_bits();
 			if(!nrefs) continue;
 
-			const vm::Cell::SpecialType type = dc->special_type();
-			const bool isMerkle = type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate;
-			if(isMerkle && lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level())
-				lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
+			if(lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level()) {
+				const vm::Cell::SpecialType type = dc->special_type();
+				if(type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate)
+					lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
+			}
 			vm::Cell* const* refs = dc->get_refs();
 			do {
 				--nrefs;

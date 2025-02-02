@@ -236,6 +236,8 @@ inline int32 count_bits64(uint64 x) {
 
 #else
 
+#pragma GCC target("popcnt")
+
 inline int32 count_leading_zeroes32(uint32 x) {
   if (x == 0) {
     return 32;

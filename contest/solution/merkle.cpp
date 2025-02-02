@@ -1,11 +1,15 @@
 #include "merkle.hpp"
 
-#include "crypto/vm/cells/MerkleProof.h"
 #include "crypto/vm/cells/CellBuilder.h"
 #include "crypto/vm/cells/CellSlice.h"
 #include "crypto/vm/hash-set.h"
+#include "td/utils/HashMap.h"
 
 #include "profile.hpp"
+
+struct MyDataCell : public vm::DataCell {
+	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
+};
 
 struct BOC {
 	struct CellInfo {
@@ -21,14 +25,11 @@ struct BOC {
 	uint64_t data_bytes = 0;
 	int ref_byte_size=1, offset_byte_size=1;
 
-	struct MyDataCell : public vm::DataCell {
-		vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
-	};
-
 	td::Result<int> import_cell(const vm::Cell *cell, int depth) {
 		if(depth > 1024) return td::Status::Error("error while importing a cell into a bag of cells: cell depth too large");
 		if(!cell) return td::Status::Error("error while importing a cell into a bag of cells: cell is null");
-		int* it = h2i.find(cell->get_hash());
+		const vm::Cell::Hash &hash = cell->get_hash();
+		int* it = h2i.find(hash);
 		if(it) return *it;
 		if(cell->get_virtualization()) return td::Status::Error("error while importing a cell into a bag of cells: cell has non-zero virtualization level");
 		TRY_RESULT(loaded_dc, cell->load_cell());
@@ -51,7 +52,7 @@ struct BOC {
 			ind = (int) cells.size();
 			cells.emplace_back(std::move(loaded_dc.data_cell));
 		}
-		h2i.emplace(dc->get_hash(), ind);
+		h2i.emplace(hash, ind);
 		return ind;
 	}
 
@@ -100,17 +101,98 @@ struct BOC {
 	}
 };
 
+struct MerkleProofImpl {
+	using IsPrunnedFunction = std::function<bool(const td::Ref<vm::Cell> &)>;
+	explicit MerkleProofImpl(IsPrunnedFunction is_prunned) : is_prunned_(std::move(is_prunned)) {}
+	explicit MerkleProofImpl(vm::CellUsageTree *usage_tree) : usage_tree_(usage_tree) {}
+
+	td::Ref<vm::Cell> create_from(td::Ref<vm::Cell> cell) {
+		if(!is_prunned_) {
+			dfs_usage_tree(cell, usage_tree_->root_id());
+			is_prunned_ = [this](const td::Ref<vm::Cell> &cell) { return !visited_cells_.count(cell->get_hash()); };
+		}
+		try {
+			return dfs(cell, cell->get_level());
+		} catch (vm::CellBuilder::CellWriteError &) {
+			return {};
+		} catch (vm::CellBuilder::CellCreateError &) {
+			return {};
+		}
+	}
+
+	vm::HashMap<const vm::Cell*> cells_;
+	vm::HashSet visited_cells_;
+	vm::CellUsageTree *usage_tree_{nullptr};
+	IsPrunnedFunction is_prunned_;
+
+	void dfs_usage_tree(td::Ref<vm::Cell> cell, vm::CellUsageTree::NodeId node_id) {
+		if(!usage_tree_->has_mark(node_id)) return;
+		visited_cells_.emplace(cell->get_hash());
+
+		auto rlc = cell->load_cell();
+		vm::Cell::LoadedCell  lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
+		const MyDataCell *dc = (const MyDataCell*) lc.data_cell.get();
+
+		const uint32_t nrefs = lc.data_cell->size_refs();
+		if(!nrefs) return;
+
+		if(lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level()) {
+			const vm::Cell::SpecialType type = dc->special_type();
+			if(type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate)
+				lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
+		}
+		vm::Cell* const* refs = dc->get_refs();
+		for(uint32_t i = 0; i < nrefs; ++i)
+			dfs_usage_tree(refs[i]->virtualize(lc.virt), usage_tree_->get_child(node_id, i));
+	}
+
+	td::Ref<vm::Cell> dfs(td::Ref<vm::Cell> cell, int merkle_depth) {
+		const vm::Cell::Hash &hash = cell->get_hash();
+		auto it = cells_.find(hash);
+		if(it) return td::Ref(*it);
+		if(is_prunned_(cell)) {
+			auto res = vm::CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
+			cells_.emplace(hash, res.get());
+			return res;
+		}
+
+		auto rlc = cell->load_cell();
+		vm::Cell::LoadedCell  lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
+		const MyDataCell *dc = (const MyDataCell*) lc.data_cell.get();
+
+		vm::CellBuilder cb;
+		cb.store_bits(dc->get_data(), dc->get_bits());
+
+		const uint32_t nrefs = lc.data_cell->size_refs();
+		if(nrefs) {
+			const vm::Cell::SpecialType type = dc->special_type();
+			if(type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate) {
+				if(merkle_depth != vm::Cell::VirtualizationParameters::max_level()) ++ merkle_depth;
+				if(lc.virt.get_level() != vm::Cell::VirtualizationParameters::max_level())
+					lc.virt = vm::Cell::VirtualizationParameters(lc.virt.get_level()+1, lc.virt.get_virtualization());
+			}
+			vm::Cell* const* refs = dc->get_refs();
+			for(uint32_t i = 0; i < nrefs; ++i)
+				cb.store_ref(dfs(refs[i]->virtualize(lc.virt), merkle_depth));
+		}
+		
+		auto res = cb.finalize(dc->is_special());
+		cells_.emplace(hash, res.get());
+		return res;
+	}
+};
+
 td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td::Ref<vm::Cell> state_root, vm::CellUsageTree *tree) {
 	PROFILER("merkle_update");
 
-	td::Ref<vm::Cell> update_to = vm::MerkleProof::generate_raw(std::move(state_root), [&](const td::Ref<vm::Cell> &cell) {
-	auto loaded_cell = cell->load_cell().move_as_ok();  // FIXME
-	if(!loaded_cell.data_cell->size_refs()) return false;
-	return !loaded_cell.tree_node.empty() && loaded_cell.tree_node.mark_path(tree);
-	});
+	td::Ref<vm::Cell> update_to = MerkleProofImpl([&](const td::Ref<vm::Cell> &cell) {
+		auto loaded_cell = cell->load_cell().move_as_ok();
+		if(!loaded_cell.data_cell->size_refs()) return false;
+		return !loaded_cell.tree_node.empty() && loaded_cell.tree_node.mark_path(tree);
+	}).create_from(std::move(state_root));
 	if(update_to.is_null()) return td::Status::Error("failed to generate Merkle update");
 	tree->set_use_mark_for_is_loaded(true);
-	td::Ref<vm::Cell> update_from = vm::MerkleProof::generate_raw(std::move(prev_state_root), tree);
+	td::Ref<vm::Cell> update_from = MerkleProofImpl(tree).create_from(std::move(prev_state_root));
 	if(update_from.is_null()) return td::Status::Error("failed to generate Merkle update");
 
 	vm::CellBuilder cb;

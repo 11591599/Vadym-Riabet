@@ -93,11 +93,11 @@ class CellWithUniquePtrStorage : public CellT {
   std::unique_ptr<char[]> storage_;
 
   const char* get_storage() const final {
-    CHECK(storage_);
+    DCHECK(storage_);
     return storage_.get();
   }
   char* get_storage() final {
-    CHECK(storage_);
+    DCHECK(storage_);
     return storage_.get();
   }
 };

@@ -30,6 +30,14 @@ struct HashSet {
 		return true;
 	}
 
+	bool count(const vm::CellHash &h) const {
+		if(buckets.empty()) return false;
+		const uint64_t b = (*(const uint64_t*) h.as_array().data()) & (buckets.size()-1);
+		for(int i = buckets[b]; i != -1; i = hs[i].second)
+			if(hs[i].first == h) return true;
+		return false;
+	}
+
 	size_t size() const {
 		return hs.size();
 	}
