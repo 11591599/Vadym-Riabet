@@ -9,15 +9,23 @@
 
 struct MyDataCell : public vm::DataCell {
 	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
+
+	int serialize(unsigned char* buff, int buff_size) const {
+		int len = get_serialized_size(false);
+		if(len > buff_size) return 0;
+		buff[0] = static_cast<unsigned char>(info_.d1());
+		buff[1] = info_.d2();
+		std::memcpy(buff + 2, get_data(), len - 2);
+		return len;
+	}
 };
 
 struct BOC {
 	struct CellInfo {
-		td::Ref<vm::DataCell> dc_ref;
+		const MyDataCell *dc_ref;
 		std::array<int, 4> ref_idx;
-		CellInfo(td::Ref<vm::DataCell> _dc): dc_ref(std::move(_dc)) {}
-		CellInfo(td::Ref<vm::DataCell> _dc, const std::array<int, 4>& _ref_list):
-			dc_ref(std::move(_dc)), ref_idx(_ref_list) {}
+		CellInfo(const MyDataCell *_dc): dc_ref(_dc) {}
+		CellInfo(const MyDataCell *_dc, const std::array<int, 4>& _ref_list): dc_ref(_dc), ref_idx(_ref_list) {}
 	};
 	std::vector<CellInfo> cells;
 	vm::HashMap<int> h2i;
@@ -33,31 +41,31 @@ struct BOC {
 		if(it) return *it;
 		if(cell->get_virtualization()) return td::Status::Error("error while importing a cell into a bag of cells: cell has non-zero virtualization level");
 		TRY_RESULT(loaded_dc, cell->load_cell());
-		const vm::DataCell *dc = loaded_dc.data_cell.get();
+		const MyDataCell *dc = (const MyDataCell*) loaded_dc.data_cell.get();
 		data_bytes += dc->get_serialized_size();
 		const uint32_t size_refs = dc->size_refs();
 		int ind;
 		if(size_refs) {
 			num_refs += size_refs;
 			std::array<int, 4> refs;
-			vm::Cell* const* dc_refs = ((const MyDataCell*)dc)->get_refs();
+			vm::Cell* const* dc_refs = dc->get_refs();
 			for(uint32_t i = 0; i < size_refs; ++i) {
 				auto r = import_cell(dc_refs[i], depth+1);
 				if(r.is_error()) return r.move_as_error();
 				refs[i] = r.move_as_ok();
 			}
 			ind = (int) cells.size();
-			cells.emplace_back(std::move(loaded_dc.data_cell), refs);
+			cells.emplace_back(dc, refs);
 		} else {
 			ind = (int) cells.size();
-			cells.emplace_back(std::move(loaded_dc.data_cell));
+			cells.emplace_back(dc);
 		}
 		h2i.emplace(hash, ind);
 		return ind;
 	}
 
-	td::Status import_cells(td::Ref<vm::Cell> r) {
-		auto res = import_cell(r.get(), 0);
+	td::Status import_cells(const vm::Cell *r) {
+		auto res = import_cell(r, 0);
 		if(res.is_error()) return res.move_as_error();
 		return td::Status::OK();
 	}
@@ -90,8 +98,8 @@ struct BOC {
 		store_ref(0);
 		for(int i = 0; i < (int) cells.size(); ++i) {
 			const auto& dc_info = cells[cells.size() - 1 - i];
-			const td::Ref<vm::DataCell>& dc = dc_info.dc_ref;
-			buff += dc->serialize(buff, int(buff_end - buff), false);
+			const MyDataCell *dc = dc_info.dc_ref;
+			buff += dc->serialize(buff, int(buff_end - buff));
 			const uint32_t size_refs = dc_info.dc_ref->size_refs();
 			for(uint32_t j = 0; j < size_refs; ++j)
 				store_ref((int) cells.size() - 1 - dc_info.ref_idx[j]);
@@ -102,15 +110,10 @@ struct BOC {
 };
 
 struct MerkleProofImpl {
-	using IsPrunnedFunction = std::function<bool(const td::Ref<vm::Cell> &)>;
-	explicit MerkleProofImpl(IsPrunnedFunction is_prunned) : is_prunned_(std::move(is_prunned)) {}
-	explicit MerkleProofImpl(vm::CellUsageTree *usage_tree) : usage_tree_(usage_tree) {}
+	explicit MerkleProofImpl(vm::CellUsageTree *usage_tree, bool from=false) : usage_tree_(usage_tree), from(from) {}
 
 	td::Ref<vm::Cell> create_from(td::Ref<vm::Cell> cell) {
-		if(!is_prunned_) {
-			dfs_usage_tree(cell, usage_tree_->root_id());
-			is_prunned_ = [this](const td::Ref<vm::Cell> &cell) { return !visited_cells_.count(cell->get_hash()); };
-		}
+		if(from) dfs_usage_tree(cell, usage_tree_->root_id());
 		try {
 			return dfs(cell, cell->get_level());
 		} catch (vm::CellBuilder::CellWriteError &) {
@@ -123,7 +126,7 @@ struct MerkleProofImpl {
 	vm::HashMap<const vm::Cell*> cells_;
 	vm::HashSet visited_cells_;
 	vm::CellUsageTree *usage_tree_{nullptr};
-	IsPrunnedFunction is_prunned_;
+	bool from;
 
 	void dfs_usage_tree(td::Ref<vm::Cell> cell, vm::CellUsageTree::NodeId node_id) {
 		if(!usage_tree_->has_mark(node_id)) return;
@@ -146,24 +149,49 @@ struct MerkleProofImpl {
 			dfs_usage_tree(refs[i]->virtualize(lc.virt), usage_tree_->get_child(node_id, i));
 	}
 
-	td::Ref<vm::Cell> dfs(td::Ref<vm::Cell> cell, int merkle_depth) {
+	td::Ref<vm::Cell> dfs(td::Ref<vm::Cell> cell, uint32_t merkle_depth) {
 		const vm::Cell::Hash &hash = cell->get_hash();
 		auto it = cells_.find(hash);
 		if(it) return td::Ref(*it);
-		if(is_prunned_(cell)) {
-			auto res = vm::CellBuilder::create_pruned_branch(cell, merkle_depth + 1);
-			cells_.emplace(hash, res.get());
-			return res;
-		}
+
+		const auto prune = [&]()->td::Ref<vm::Cell> {
+			if(cell->is_loaded() && !cell->get_virtualization() && !cell->load_cell().move_as_ok().data_cell->size_refs()) {
+				cells_.emplace(hash, cell.get());
+				return cell;
+			}
+			const auto level_mask = cell->get_level_mask().apply(3);
+			const uint32_t level = level_mask.get_level();
+			if(merkle_depth < level) throw vm::CellBuilder::CellWriteError();
+			vm::CellBuilder cb;
+			cb.store_long(static_cast<td::uint8>(vm::Cell::SpecialType::PrunnedBranch), 8);
+			cb.store_long(level_mask.apply_or(vm::Cell::LevelMask::one_level(merkle_depth + 1)).get_mask(), 8);
+			for(uint32_t i = 0; i <= level; ++i) {
+				if(level_mask.is_significant(i)) {
+					cb.store_bytes(cell->get_hash(i).as_slice());
+				}
+			}
+			for(uint32_t i = 0; i <= level; ++i) {
+				if (level_mask.is_significant(i)) {
+					cb.store_long(cell->get_depth(i), 16);
+				}
+			}
+			cell = cb.finalize(true);
+			cells_.emplace(cell->get_hash(), cell.get());
+			return cell;
+		};
+
+		if(from && !visited_cells_.count(hash)) return prune();
 
 		auto rlc = cell->load_cell();
 		vm::Cell::LoadedCell  lc = rlc.is_ok() ? rlc.move_as_ok() : vm::Cell::LoadedCell{};
 		const MyDataCell *dc = (const MyDataCell*) lc.data_cell.get();
+		const uint32_t nrefs = lc.data_cell->size_refs();
+
+		if(!from && nrefs && !lc.tree_node.empty() && lc.tree_node.mark_path(usage_tree_)) return prune();
 
 		vm::CellBuilder cb;
 		cb.store_bits(dc->get_data(), dc->get_bits());
 
-		const uint32_t nrefs = lc.data_cell->size_refs();
 		if(nrefs) {
 			const vm::Cell::SpecialType type = dc->special_type();
 			if(type == vm::CellTraits::SpecialType::MerkleProof || type == vm::CellTraits::SpecialType::MerkleUpdate) {
@@ -185,14 +213,10 @@ struct MerkleProofImpl {
 td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td::Ref<vm::Cell> state_root, vm::CellUsageTree *tree) {
 	PROFILER("merkle_update");
 
-	td::Ref<vm::Cell> update_to = MerkleProofImpl([&](const td::Ref<vm::Cell> &cell) {
-		auto loaded_cell = cell->load_cell().move_as_ok();
-		if(!loaded_cell.data_cell->size_refs()) return false;
-		return !loaded_cell.tree_node.empty() && loaded_cell.tree_node.mark_path(tree);
-	}).create_from(std::move(state_root));
+	td::Ref<vm::Cell> update_to = MerkleProofImpl(tree).create_from(std::move(state_root));
 	if(update_to.is_null()) return td::Status::Error("failed to generate Merkle update");
 	tree->set_use_mark_for_is_loaded(true);
-	td::Ref<vm::Cell> update_from = MerkleProofImpl(tree).create_from(std::move(prev_state_root));
+	td::Ref<vm::Cell> update_from = MerkleProofImpl(tree, true).create_from(std::move(prev_state_root));
 	if(update_from.is_null()) return td::Status::Error("failed to generate Merkle update");
 
 	vm::CellBuilder cb;
@@ -207,6 +231,6 @@ td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td:
 	if(state_update.is_null()) return td::Status::Error("failed to generate Merkle update");
 
 	BOC boc;
-	TRY_STATUS(boc.import_cells(std::move(state_update)));
+	TRY_STATUS(boc.import_cells(state_update.get()));
 	return boc.serialize();
 }
