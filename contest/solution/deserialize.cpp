@@ -56,7 +56,8 @@ struct CellWithStorage : public vm::DataCell {
 	char* storage;
 	CellWithStorage(const Info &info, char* n_storage):
 		vm::DataCell(info), storage(NEXT_STORAGE) { NEXT_STORAGE = n_storage; }
-	CellWithStorage(const CellWithStorage& other): vm::DataCell(other.info_) { CHECK(false); }
+	CellWithStorage(const CellWithStorage& other):
+		vm::DataCell(other.info_), storage(other.storage) {}
 	~CellWithStorage() {}
 	const char* get_storage() const { return storage; }
 	char* get_storage() { return storage; }

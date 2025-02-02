@@ -16,6 +16,7 @@
 #include "deserialize.hpp"
 #include "profile.hpp"
 #include "transaction.hpp"
+#include "merkle.hpp"
 
 namespace solution {
 
@@ -4755,7 +4756,6 @@ bool ContestValidateQuery::try_validate() {
  * @return True on success, False on error.
  */
 bool ContestValidateQuery::build_state_update() {
-	PROFILER("build_state_update");
 	td::Ref<vm::Cell> msg_q_info;
 	{
 		vm::CellBuilder cb;
@@ -4801,12 +4801,9 @@ bool ContestValidateQuery::build_state_update() {
 	}
 
 	if(prev_state_root_->get_level() || state_root->get_level()) return fatal_error("non zero state level");
-	// TODO: Critic function
-	auto [a, b] = vm::MerkleUpdate::generate_raw(std::move(prev_state_root_), std::move(state_root), state_usage_tree_.get());
-	if(a.is_null() || b.is_null()) return fatal_error("failed to generate Merkle update");
-	auto state_update = vm::CellBuilder::create_merkle_update(std::move(a), std::move(b));
-	if(state_update.is_null()) return fatal_error("failed to generate Merkle update");
-	result_state_update_ = vm::std_boc_serialize(state_update).move_as_ok();
+	auto res = merkle_update(std::move(prev_state_root_), std::move(state_root), state_usage_tree_.get());
+	if(res.is_error()) return fatal_error(res.move_as_error());
+	result_state_update_ = res.move_as_ok();
 	return true;
 }
 

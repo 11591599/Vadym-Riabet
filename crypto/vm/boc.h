@@ -282,7 +282,7 @@ class BagOfCells {
     }
   };
 
- private:
+ protected:
   int cell_count{0}, root_count{0}, dangle_count{0}, int_refs{0};
   int int_hashes{0}, top_hashes{0};
   int max_depth{1024};
@@ -361,7 +361,7 @@ class BagOfCells {
   static int precompute_cell_serialization_size(const unsigned char* cell, std::size_t len, int ref_size,
                                                 int* refs_num_ptr = nullptr);
 
- private:
+ protected:
   int rv_idx;
   td::Result<int> import_cell(td::Ref<vm::Cell> cell, int depth);
   void cells_clear() {

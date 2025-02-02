@@ -13,6 +13,7 @@ add_library(contest-solution STATIC
 	deserialize.cpp
 	profile.cpp
 	transaction.cpp
+	merkle.cpp
 )
 target_include_directories(contest-solution PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>)
 target_include_directories(contest-solution PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../validator>)
