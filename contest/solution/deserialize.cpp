@@ -51,12 +51,23 @@ struct CellWithStorage : public vm::DataCell {
 	constexpr static int STORAGE_SIZE = 228;
 	inline thread_local static std::vector<char> BIG_STORAGE;
 	inline thread_local static char* NEXT_STORAGE = nullptr;
+	inline thread_local static std::vector<CellWithStorage> CELLS;
+
 	char* storage;
 	CellWithStorage(const Info &info, char* n_storage):
 		vm::DataCell(info), storage(NEXT_STORAGE) { NEXT_STORAGE = n_storage; }
-	~CellWithStorage() { vm::DataCell::destroy_storage(storage); }
+	CellWithStorage(const CellWithStorage& other): vm::DataCell(other.info_) { CHECK(false); }
+	~CellWithStorage() {}
 	const char* get_storage() const { return storage; }
 	char* get_storage() { return storage; }
+
+	static void clear(const size_t cell_count) {
+		if(const size_t desired_size = STORAGE_SIZE * cell_count; BIG_STORAGE.size() < desired_size)
+			BIG_STORAGE.resize(desired_size);
+		NEXT_STORAGE = BIG_STORAGE.data();
+		CELLS.clear();
+		CELLS.reserve(cell_count);
+	}
 };
 
 struct CellSerializationInfo {
@@ -128,8 +139,6 @@ struct CellSerializationInfo {
 		uint16_t* depth_ptr = (uint16_t*) (refs_ptr + refs_cnt);
 		uint8_t* data_ptr = (uint8_t*) (depth_ptr + hash_count);
 		std::memcpy(data_ptr, data, data_len);
-		CellWithStorage *data_cell = new CellWithStorage(info, (char*) data_ptr + data_len);
-		// init refs
 		std::memcpy(refs_ptr, refs.data(), refs_cnt * sizeof(vm::Cell*));
 		uint8_t tmp[2];
 		tmp[1] = info.d2();
@@ -168,7 +177,7 @@ struct CellSerializationInfo {
 			#pragma GCC diagnostic pop
 			++hash_i;
 		}
-		return data_cell;
+		return &CellWithStorage::CELLS.emplace_back(info, (char*) data_ptr + data_len);
 	}
 };
 
@@ -190,9 +199,7 @@ std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
 		}
 	}
 
-	if(const size_t desired_size = CellWithStorage::STORAGE_SIZE * info.cell_count; CellWithStorage::BIG_STORAGE.size() < desired_size)
-		CellWithStorage::BIG_STORAGE.resize(desired_size);
-	CellWithStorage::NEXT_STORAGE = CellWithStorage::BIG_STORAGE.data();
+	CellWithStorage::clear(info.cell_count);
 	std::vector<std::pair<vm::Cell*, int>> cell_list(info.cell_count);
 	const auto get_idx_entry = [&](int index)->uint64_t {
 		uint64_t raw;
@@ -223,7 +230,7 @@ std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
 		roots[i] = td::Ref<vm::Cell>(c, td::Ref<vm::Cell>::acquire_t{});
 		++ r;
 	}
-	for(const auto &[c, r] : cell_list) if(r > 1)
-		td::Ref<vm::Cell>::acquire_shared(c, r-1);
+	for(const auto &[c, r] : cell_list) if(r)
+		td::Ref<vm::Cell>::acquire_shared(c, r);
 	return roots;
 }
