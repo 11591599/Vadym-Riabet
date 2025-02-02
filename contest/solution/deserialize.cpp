@@ -49,9 +49,9 @@ struct CellSliceInfo {
 struct CellWithStorage : public vm::DataCell {
 	using vm::DataCell::Info;
 	constexpr static int STORAGE_SIZE = 228;
-	inline thread_local static std::vector<char> BIG_STORAGE;
-	inline thread_local static char* NEXT_STORAGE = nullptr;
-	inline thread_local static std::vector<CellWithStorage> CELLS;
+	inline static std::vector<char> BIG_STORAGE;
+	inline static char* NEXT_STORAGE = nullptr;
+	inline static std::vector<CellWithStorage> CELLS;
 
 	char* storage;
 	CellWithStorage(const Info &info, char* n_storage):

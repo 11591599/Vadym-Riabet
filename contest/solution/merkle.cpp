@@ -7,16 +7,25 @@
 
 #include "profile.hpp"
 
+static std::vector<uint8_t> serialized_data;
+using rev_u8_it = std::reverse_iterator<uint8_t*>;
+static void push_uint32(uint32_t x) {
+	const rev_u8_it e((uint8_t*)&x);
+	serialized_data.insert(serialized_data.end(), e-4, e);
+} 
+static void push_uint64(uint64_t x) {
+	const rev_u8_it e((uint8_t*)&x);
+	serialized_data.insert(serialized_data.end(), e-8, e);
+} 
+
 struct MyDataCell : public vm::DataCell {
 	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
 
-	int serialize(unsigned char* buff, int buff_size) const {
-		int len = get_serialized_size(false);
-		if(len > buff_size) return 0;
-		buff[0] = static_cast<unsigned char>(info_.d1());
-		buff[1] = info_.d2();
-		std::memcpy(buff + 2, get_data(), len - 2);
-		return len;
+	void serialize() const {
+		serialized_data.push_back(info_.d1());
+		serialized_data.push_back(info_.d2());
+		const uint8_t *data = get_data();
+		serialized_data.insert(serialized_data.end(), data, data+((get_bits() + 7) >> 3));
 	}
 };
 
@@ -31,7 +40,6 @@ struct BOC {
 	vm::HashMap<int> h2i;
 	int num_refs = 0;
 	uint64_t data_bytes = 0;
-	int ref_byte_size=1, offset_byte_size=1;
 
 	td::Result<int> import_cell(const vm::Cell *cell, int depth) {
 		if(depth > 1024) return td::Status::Error("error while importing a cell into a bag of cells: cell depth too large");
@@ -70,42 +78,25 @@ struct BOC {
 		return td::Status::OK();
 	}
 
-	td::Result<td::BufferSlice> serialize() {
-		while(cells.size() >= (1ULL << (ref_byte_size << 3))) ++ref_byte_size;
-		const uint64_t data_size = data_bytes + (uint64_t)num_refs * ref_byte_size;
-		while(data_size >= (1ULL << (offset_byte_size << 3))) ++offset_byte_size;
-		if(ref_byte_size > 4 || offset_byte_size > 8) return td::Status::Error("size of refs or offsets too big");
-		const uint64_t total_size = 4 + 1 + 1 + 3 * ref_byte_size + offset_byte_size + ref_byte_size + data_size;
-		td::BufferSlice res(total_size);
-		uint8_t* buff = (uint8_t*) res.data();
-		const uint8_t* buff_end = buff + total_size;
-		const auto store_uint = [&](uint64_t value, uint32_t bytes) {
-			uint8_t* ptr = buff += bytes;
-			while(bytes--) {
-				*--ptr = value & 0xff;
-				value >>= 8;
-			}
-		};
-		const auto store_ref = [&](uint64_t value) { store_uint(value, ref_byte_size); };
-		const auto store_offset = [&](uint64_t value) { store_uint(value, offset_byte_size); };
-		store_uint(0xb5ee9c72u, 4);
-		store_uint(ref_byte_size, 1);
-		store_uint(offset_byte_size, 1);
-		store_ref(cells.size());
-		store_ref(1);
-		store_ref(0);
-		store_offset(data_size);
-		store_ref(0);
+	td::BufferSlice serialize() {
+		const uint64_t data_size = data_bytes + (uint64_t)num_refs * 4;
+		serialized_data.clear();
+		push_uint32(0xb5ee9c72u);
+		serialized_data.push_back(4);
+		serialized_data.push_back(8);
+		push_uint32((uint32_t) cells.size());
+		push_uint32(1);
+		push_uint32(0);
+		push_uint64(data_size);
+		push_uint32(0);
 		for(int i = 0; i < (int) cells.size(); ++i) {
 			const auto& dc_info = cells[cells.size() - 1 - i];
-			const MyDataCell *dc = dc_info.dc_ref;
-			buff += dc->serialize(buff, int(buff_end - buff));
+			dc_info.dc_ref->serialize();
 			const uint32_t size_refs = dc_info.dc_ref->size_refs();
 			for(uint32_t j = 0; j < size_refs; ++j)
-				store_ref((int) cells.size() - 1 - dc_info.ref_idx[j]);
+				push_uint32((uint32_t) cells.size() - 1 - dc_info.ref_idx[j]);
 		}
-		DCHECK(buff == buff_end);
-		return res;
+		return td::BufferSlice((char*) serialized_data.data(), serialized_data.size());
 	}
 };
 
@@ -175,9 +166,9 @@ struct MerkleProofImpl {
 					cb.store_long(cell->get_depth(i), 16);
 				}
 			}
-			cell = cb.finalize(true);
-			cells_.emplace(cell->get_hash(), cell.get());
-			return cell;
+			auto res = cb.finalize(true);
+			cells_.emplace(hash, res.get());
+			return res;
 		};
 
 		if(from && !visited_cells_.count(hash)) return prune();
