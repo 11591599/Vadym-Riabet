@@ -173,6 +173,7 @@ struct MerkleProofImpl {
 			}
 			vm::Cell::LevelMask level_mask;
 			td::uint32 virtualization = 0;
+			bool isMerkle = false;
 			switch(type) {
 			case vm::Cell::SpecialType::Ordinary: {
 				for(uint32_t i = 0; i < refs_cnt; ++i) {
@@ -191,6 +192,7 @@ struct MerkleProofImpl {
 					return td::Status::Error("Depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().shift_right();
 				virtualization = refs[0]->get_virtualization();
+				isMerkle = true;
 				break;
 			}
 			case vm::Cell::SpecialType::MerkleUpdate: {
@@ -208,17 +210,40 @@ struct MerkleProofImpl {
 					return td::Status::Error("Second depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().apply_or(refs[1]->get_level_mask()).shift_right();
 				virtualization = td::max(refs[0]->get_virtualization(), refs[1]->get_virtualization());
+				isMerkle = true;
 				break;
 			}
 			default:
 				return td::Status::Error("Unknown special cell type");
 			}
-			MyDataCell::Info info;
-			CHECK(!virtualization);
 			if(td::unlikely(virtualization > vm::Cell::max_virtualization)) return td::Status::Error("Too big virtualization");
-			DCHECK(level_mask.get_level() <= vm::Cell::max_level);
+
+
+			const uint32_t level = level_mask.get_level();
+			uint32_t level_i = 1, hash_i = 1;
+			const uint32_t mask_diff = level_mask.get_mask() ^ dc->get_level_mask().get_mask();
+			std::array<int, 4> h_levels = {0};
+			vm::Cell* const *old_refs = dc->get_refs();
+			for(; level_i <= level; ++level_i) {
+				if((mask_diff>>(level_i-1))&1) break;
+				if(!level_mask.is_significant(level_i)) continue;
+				if([&](){
+					const uint32_t level_i_ref = isMerkle ? level_i + 1 : level_i;
+					for(uint32_t i = 0; i < refs_cnt; ++i) {
+						if(refs[i]->get_depth(level_i_ref) != old_refs[i]->get_depth(level_i_ref)) return false;
+						if(refs[i]->get_hash(level_i_ref) != old_refs[i]->get_hash(level_i_ref)) return false;
+					}
+					return true;
+				}()) h_levels[hash_i++] = level_i;
+				else break;
+			}
+			if(level_i > level && level_mask == dc->get_level_mask() && virtualization == dc->get_virtualization())
+				return td::Ref(dc);
+
 			const uint32_t hash_count = level_mask.get_hashes_count();
+			DCHECK(level_mask.get_level() <= vm::Cell::max_level);
 			DCHECK(hash_count <= vm::Cell::max_level + 1);
+			MyDataCell::Info info;
 			info.bits_ = bits;
 			info.refs_count_ = refs_cnt & 7;
 			info.is_special_ = dc->is_special();
@@ -234,22 +259,23 @@ struct MerkleProofImpl {
 
 			memcpy(data_ptr, data, (bits+7)>>3);
 			for(uint32_t i = 0; i < refs_cnt; ++i) refs_ptr[i] = refs[i].release();
-			hashes_ptr[0] = dc->get_hash(0);
-			depth_ptr[0] = dc->get_depth(0);
+			for(uint32_t i = 0; i < hash_i; ++i) {
+				hashes_ptr[i] = dc->get_hash(h_levels[i]);
+				depth_ptr[i] = dc->get_depth(h_levels[i]);
+			}
 
 			uint8_t tmp[2];
 			tmp[1] = info.d2();
-			const uint32_t level = level_mask.get_level();
-			for(uint32_t level_i = 1, hash_i = 1; level_i <= level; ++level_i) {
+			for(; level_i <= level; ++level_i) {
 				if(!level_mask.is_significant(level_i)) continue;
 				tmp[0] = info.d1(level_mask.apply(level_i));
 				#pragma GCC diagnostic push
 				#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+				const uint32_t level_i_ref = isMerkle ? level_i + 1 : level_i;
 				SHA256_CTX sha_ctx;
 				SHA256_Init(&sha_ctx);
 				SHA256_Update(&sha_ctx, tmp, 2);
 				SHA256_Update(&sha_ctx, hashes_ptr[hash_i - 1].as_array().begin(), vm::Cell::hash_bytes);
-				const uint32_t level_i_ref = (type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate) ? level_i + 1 : level_i;
 				uint16_t depth = 0;
 				uint8_t child_depth_buf[vm::Cell::max_refs * vm::Cell::depth_bytes];
 				for(uint32_t i = 0; i < refs_cnt; i++) {
@@ -261,7 +287,6 @@ struct MerkleProofImpl {
 				SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes * refs_cnt);
 				if(++depth > vm::Cell::max_depth) return td::Status::Error("Depth is too big");
 				depth_ptr[hash_i] = depth;
-				// children hash
 				for(uint32_t i = 0; i < refs_cnt; i++)
 					SHA256_Update(&sha_ctx, refs_ptr[i]->get_hash(level_i_ref).as_array().begin(), vm::Cell::hash_bytes);
 				SHA256_Final(const_cast<uint8_t*>(hashes_ptr[hash_i].as_array().begin()), &sha_ctx);
