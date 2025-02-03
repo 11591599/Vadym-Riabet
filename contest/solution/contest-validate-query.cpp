@@ -871,13 +871,11 @@ bool ContestValidateQuery::unpack_prev_state() {
  *
  * @returns True if the unpacking and checks are successful, false otherwise.
  */
-bool ContestValidateQuery::unpack_one_prev_state(block::ShardState& ss, BlockIdExt blkid,
-																								 Ref<vm::Cell> prev_state_root) {
-	auto res = ss.unpack_state_ext(blkid, std::move(prev_state_root), global_id_, mc_seqno_, after_split_,
-																 after_split_ | after_merge_, [this](ton::BlockSeqno mc_seqno) {
-																	 Ref<MasterchainStateQ> state;
-																	 return request_aux_mc_state(mc_seqno, state);
-																 });
+bool ContestValidateQuery::unpack_one_prev_state(block::ShardState& ss, BlockIdExt blkid, Ref<vm::Cell> prev_state_root) {
+	auto res = ss.unpack_state_ext(blkid, std::move(prev_state_root), global_id_, mc_seqno_, after_split_, after_split_ | after_merge_, [this](ton::BlockSeqno mc_seqno) {
+		 Ref<MasterchainStateQ> state;
+		 return request_aux_mc_state(mc_seqno, state);
+	});
 	if (res.is_error()) {
 		return fatal_error(std::move(res));
 	}
@@ -939,6 +937,7 @@ bool ContestValidateQuery::init_next_state() {
  * @returns True if the request for neighbor message queues was successful, false otherwise.
  */
 bool ContestValidateQuery::request_neighbor_queues() {
+	PROFILER("req_neighbor_Qs");
 	auto neighbor_list = new_shard_conf_->get_neighbor_shard_hash_ids(shard_);
 	for (ton::BlockId blk_id : neighbor_list) {
 		if (blk_id.seqno == 0 && blk_id.shard_full() != shard_) {
@@ -1061,6 +1060,7 @@ bool ContestValidateQuery::register_mc_state(Ref<MasterchainStateQ> other_mc_sta
  * @returns True if the auxiliary masterchain state is successfully requested, false otherwise.
  */
 bool ContestValidateQuery::request_aux_mc_state(BlockSeqno seqno, Ref<MasterchainStateQ>& state) {
+	PROFILER("request_aux_mc_state");
 	if (mc_state_.is_null()) {
 		return fatal_error(PSTRING() << "cannot find masterchain block with seqno " << seqno
 																 << " to load corresponding state because no masterchain state is known yet");
@@ -1608,6 +1608,7 @@ bool ContestValidateQuery::postcheck_one_account_update(td::ConstBitPtr acc_id, 
  * @returns True if the pre-check is successful, False otherwise.
  */
 bool ContestValidateQuery::postcheck_account_updates() {
+	PROFILER("postchck_acc_upds");
 	try {
 		if(!ps_.account_dict_->scan_diff(
 						*ns_.account_dict_,
@@ -4519,7 +4520,6 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
  * @returns True if all transactions pass the check, False otherwise.
  */
 bool ContestValidateQuery::check_transactions() {
-	PROFILER("check_transactions");
 	ns_.account_dict_ = std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
 	return account_blocks_dict_->check_for_each(
 			[this](Ref<vm::CellSlice> value, td::ConstBitPtr key, int) {

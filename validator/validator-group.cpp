@@ -414,7 +414,8 @@ void ValidatorGroup::start(std::vector<BlockIdExt> prev, BlockIdExt min_masterch
                                                  .cc_seqno = validator_set_->get_catchain_seqno(),
                                                  .last_key_block_seqno = last_key_block_seqno_,
                                                  .started_at = td::Clocks::system(),
-                                                 .self = local_id_};
+                                                 .self = local_id_,
+												 .nodes = {}};
   td::uint32 idx = 0;
   for (const auto &node : validator_set_->export_vector()) {
     PublicKeyHash id = ValidatorFullId{node.key}.compute_short_id();

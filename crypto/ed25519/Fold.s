@@ -46,7 +46,7 @@
 
     LOADA   X
     mov     $64,%ah
-f4t_1:
+.f4t_1:
     mov     $0,%al
     RL_MSB  %al,A3
     RL_MSB  %al,A2
@@ -55,7 +55,7 @@ f4t_1:
     mov     %al,(Y)
     inc     Y
     dec     %ah
-    jnz.s   f4t_1
+    jnz     .f4t_1
     ret
 
 /* _______________________________________________________________________
@@ -82,7 +82,7 @@ f4t_1:
 
     LOADA   X
     mov     $32,%ah
-f8t_1:
+.f8t_1:
     RL_MSBS %al,A3
     RL_MSBS %al,A2
     RL_MSBS %al,A1
@@ -90,7 +90,7 @@ f8t_1:
     mov     %al,(Y)
     inc     Y
     dec     %ah
-    jnz.s   f8t_1
+    jnz     .f8t_1
     ret
     
     

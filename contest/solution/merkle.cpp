@@ -5,8 +5,6 @@
 #include "crypto/vm/cells/DataCell.h"
 #include "crypto/vm/hash-set.h"
 
-#include "profile.hpp"
-
 struct MyDataCell : public vm::DataCell {
 	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
 };
@@ -212,8 +210,6 @@ struct MerkleProofImpl {
 };
 
 td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td::Ref<vm::Cell> state_root, vm::CellUsageTree *tree) {
-	PROFILER("merkle_update");
-
 	storage.clear();
 	nodes.clear();
 

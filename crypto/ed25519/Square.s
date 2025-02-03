@@ -40,16 +40,16 @@
     sub     $64,%rsp                /* T(8) */
 
 .equ  T,  %rsp
-                                    /* B3 | B2 | B1 | B0 | A3 | A2 | A1 | A0 */
-    MULSET  A2,A1, (X),   8(X)      /*    |         |         |  x0*x1  |    */
-    MULSET  B0,A3, (X),  24(X)      /*    |         |  x0*x3  |  x0*x1  |    */
-    MULSET  B2,B1, 16(X),24(X)      /*    |  x2*x3  |  x0*x3  |  x0*x1  |    */
+                                    # B3 | B2 | B1 | B0 | A3 | A2 | A1 | A0
+    MULSET  A2,A1, (X),   8(X)      #    |         |         |  x0*x1  |   
+    MULSET  B0,A3, (X),  24(X)      #    |         |  x0*x3  |  x0*x1  |   
+    MULSET  B2,B1, 16(X),24(X)      #    |  x2*x3  |  x0*x3  |  x0*x1  |   
     
-                                    /*           C1 | C0 | B3 | A0           */
-    MULSET  B3,A0, (X), 16(X)       /*         |         |  x0*x2  |         */
-    MULSET  C1,C0, 8(X),24(X)       /*         |  x1*x3  |         |         */
-    MULADD  C0,B3, 8(X),16(X)       /* +  |         |  x1*x2  |              */
-    adc     $0,C1                   /* carry will be 0 here always */
+                                    #           C1 | C0 | B3 | A0  
+    MULSET  B3,A0, (X), 16(X)       #         |         |  x0*x2  |
+    MULSET  C1,C0, 8(X),24(X)       #         |  x1*x3  |         |
+    MULADD  C0,B3, 8(X),16(X)       # +  |         |  x1*x2  |     
+    adc     $0,C1                   # carry will be 0 here always
 
     ADD4    B1,B0,A3,A2, C1,C0,B3,A0
     adc     $0,B2
@@ -64,11 +64,11 @@
     sbb     B3,B3
     neg     B3
     
-    /* add diagonal values           ; y7 | y6 | y5 | y4 | y3 | y2 | y1 | y0 */
-    SQRSET  8(T), (T),    (X)       /*         |         |         |  x0*x0  */
-    SQRSET  24(T),16(T), 8(X)       /*         |         |  x1*x1  |         */
-    SQRSET  40(T),32(T),16(X)       /*         |  x2*x2  |         |         */
-    SQRSET  56(T),48(T),24(X)       /*  x3*x3  |         |         |         */
+    # add diagonal values          ; y7 | y6 | y5 | y4 | y3 | y2 | y1 | y0
+    SQRSET  8(T), (T),    (X)       #         |         |         |  x0*x0 
+    SQRSET  24(T),16(T), 8(X)       #         |         |  x1*x1  |        
+    SQRSET  40(T),32(T),16(X)       #         |  x2*x2  |         |        
+    SQRSET  56(T),48(T),24(X)       #  x3*x3  |         |         |        
     
     ADD4    32(T),24(T),16(T),8(T), B0,A3,A2,A1
     adc     B1,40(T)

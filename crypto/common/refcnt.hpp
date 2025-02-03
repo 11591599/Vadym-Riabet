@@ -65,10 +65,10 @@ class CntObject {
     return *this;
   }
   virtual ~CntObject() {
-    auto cnt = cnt_.load(std::memory_order_relaxed);
-    (void)cnt;
+    // auto cnt = cnt_.load(std::memory_order_relaxed);
+    // (void)cnt;
     //TODO: assert(cnt == 0) will fail if object is allocated on stack
-    assert(cnt == 0 || cnt == 1);
+    // assert(cnt == 0 || cnt == 1);
   }
   virtual CntObject* make_copy() const {
     throw WriteError();

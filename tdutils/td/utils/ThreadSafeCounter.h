@@ -183,9 +183,9 @@ struct NamedPerfCounter {
 
 #define TD_PERF_COUNTER(name)                                                    \
   static auto perf_##name = td::NamedPerfCounter::get_default().get_counter(td::Slice(#name)); \
-  auto scoped_perf_##name = td::NamedPerfCounter::ScopedPerfCounterRef{.perf_counter = perf_##name};
+  auto scoped_perf_##name = td::NamedPerfCounter::ScopedPerfCounterRef{{}, perf_##name};
 
 #define TD_PERF_COUNTER_SINCE(name, since)                                       \
   static auto perf_##name = td::NamedPerfCounter::get_default().get_counter(td::Slice(#name)); \
   auto scoped_perf_##name =                                                      \
-      td::NamedPerfCounter::ScopedPerfCounterRef{.perf_counter = perf_##name, .started_at_ticks = since};
+      td::NamedPerfCounter::ScopedPerfCounterRef{{}, perf_##name, since};
