@@ -17,10 +17,10 @@ struct MyDataCell : public vm::DataCell {
 	const vm::Cell::Hash* get_hashes() const { return (const vm::Cell::Hash*) get_storage(); }
 	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
 
-	int serialize(unsigned char* buff, int buff_size) const {
+	int serialize(unsigned char* buff, int buff_size, uint8_t mask) const {
 		int len = get_serialized_size(false);
 		if(len > buff_size) return 0;
-		buff[0] = static_cast<unsigned char>(info_.d1());
+		buff[0] = uint8_t(info_.refs_count_ + 8 * info_.is_special_ + 32 * mask);
 		buff[1] = info_.d2();
 		std::memcpy(buff + 2, get_data(), len - 2);
 		return len;
@@ -30,21 +30,41 @@ struct MyDataCell : public vm::DataCell {
 struct BOC {
 	struct CellInfo {
 		const MyDataCell *dc_ref;
-		std::array<int, 4> ref_idx;
+		std::array<int, 4> refs;
+		uint8_t mask = 0;
 		CellInfo(const MyDataCell *_dc): dc_ref(_dc) {}
-		CellInfo(const MyDataCell *_dc, const std::array<int, 4>& _ref_list): dc_ref(_dc), ref_idx(_ref_list) {}
+		CellInfo(const MyDataCell *_dc, const std::array<int, 4>& _ref_list): dc_ref(_dc), refs(_ref_list) {}
 	};
 	std::vector<CellInfo> cells;
-	vm::HashMap<int> h2i;
 	int num_refs = 0;
 	uint64_t data_bytes = 0;
+	int updates[2];
 
-	td::Result<int> import_cell(const vm::Cell *cell, int depth) {
-		if(depth > 1024) return td::Status::Error("error while importing a cell into a bag of cells: cell depth too large");
+	void compute_mask(int i) {
+		CellInfo &ci = cells[i];
+		switch(ci.dc_ref->special_type()) {
+		case vm::Cell::SpecialType::Ordinary: {
+			const uint32_t nrefs = ci.dc_ref->size_refs();
+			for(uint32_t i = 0; i < nrefs; ++i)
+				ci.mask |= cells[ci.refs[i]].mask;
+			break;
+		}
+		case vm::Cell::SpecialType::PrunnedBranch:
+			ci.mask = ci.dc_ref->get_data()[1];
+			break;
+		case vm::Cell::SpecialType::MerkleProof:
+			ci.mask = cells[ci.refs[0]].mask>>1;
+			break;
+		case vm::Cell::SpecialType::MerkleUpdate:
+			ci.mask = (cells[ci.refs[0]].mask | cells[ci.refs[1]].mask)>>1;
+			break;
+		default:
+			break;
+		}
+	}
+
+	td::Result<int> import_cell(const vm::Cell *cell) {
 		if(!cell) return td::Status::Error("error while importing a cell into a bag of cells: cell is null");
-		const vm::Cell::Hash &hash = cell->get_hash();
-		int* it = h2i.find(hash);
-		if(it) return *it;
 		if(cell->get_virtualization()) return td::Status::Error("error while importing a cell into a bag of cells: cell has non-zero virtualization level");
 		TRY_RESULT(loaded_dc, cell->load_cell());
 		const MyDataCell *dc = (const MyDataCell*) loaded_dc.data_cell.get();
@@ -56,7 +76,7 @@ struct BOC {
 			std::array<int, 4> refs;
 			vm::Cell* const* dc_refs = dc->get_refs();
 			for(uint32_t i = 0; i < size_refs; ++i) {
-				auto r = import_cell(dc_refs[i], depth+1);
+				auto r = import_cell(dc_refs[i]);
 				if(r.is_error()) return r.move_as_error();
 				refs[i] = r.move_as_ok();
 			}
@@ -66,14 +86,24 @@ struct BOC {
 			ind = (int) cells.size();
 			cells.emplace_back(dc);
 		}
-		h2i.emplace(hash, ind);
+		compute_mask(ind);
 		return ind;
 	}
 
-	td::Status import_cells(const vm::Cell *r) {
-		auto res = import_cell(r, 0);
+	td::Status import_cells(const vm::Cell *r, int c) {
+		auto res = import_cell(r);
 		if(res.is_error()) return res.move_as_error();
+		updates[c] = (int)cells.size()-1;
 		return td::Status::OK();
+	}
+
+	void import_root(const vm::DataCell *r) {
+		data_bytes += r->get_serialized_size();
+		num_refs += 2;
+		CellInfo &ci = cells.emplace_back((const MyDataCell*) r);
+		ci.refs[0] = updates[0];
+		ci.refs[1] = updates[1];
+		compute_mask((int)cells.size()-1);
 	}
 
 	td::BufferSlice serialize() {
@@ -105,10 +135,10 @@ struct BOC {
 		for(int i = 0; i < (int) cells.size(); ++i) {
 			const auto& dc_info = cells[cells.size() - 1 - i];
 			const MyDataCell *dc = dc_info.dc_ref;
-			buff += dc->serialize(buff, int(buff_end - buff));
+			buff += dc->serialize(buff, int(buff_end - buff), dc_info.mask);
 			const uint32_t size_refs = dc_info.dc_ref->size_refs();
 			for(uint32_t j = 0; j < size_refs; ++j)
-				store_ref((int) cells.size() - 1 - dc_info.ref_idx[j]);
+				store_ref((int) cells.size() - 1 - dc_info.refs[j]);
 		}
 		return res;
 	}
@@ -157,10 +187,12 @@ struct MerkleProofImpl {
 	struct MyBuilder {
 		std::array<td::Ref<vm::Cell>, 4> refs;
 		uint32_t refs_cnt = 0;
+
 		void store_ref(td::Ref<vm::Cell> ref) {
 			if(ref.is_null()) throw vm::CellBuilder::CellCreateError{};
 			refs[refs_cnt++] = std::move(ref);
 		}
+
 		td::Result<td::Ref<vm::DataCell>> create(const MyDataCell* dc) {
 			const uint32_t bits = dc->get_bits();
 			const uint8_t* data = dc->get_data();
@@ -173,7 +205,6 @@ struct MerkleProofImpl {
 			}
 			vm::Cell::LevelMask level_mask;
 			td::uint32 virtualization = 0;
-			bool isMerkle = false;
 			switch(type) {
 			case vm::Cell::SpecialType::Ordinary: {
 				for(uint32_t i = 0; i < refs_cnt; ++i) {
@@ -192,7 +223,6 @@ struct MerkleProofImpl {
 					return td::Status::Error("Depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().shift_right();
 				virtualization = refs[0]->get_virtualization();
-				isMerkle = true;
 				break;
 			}
 			case vm::Cell::SpecialType::MerkleUpdate: {
@@ -210,36 +240,12 @@ struct MerkleProofImpl {
 					return td::Status::Error("Second depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().apply_or(refs[1]->get_level_mask()).shift_right();
 				virtualization = td::max(refs[0]->get_virtualization(), refs[1]->get_virtualization());
-				isMerkle = true;
 				break;
 			}
 			default:
 				return td::Status::Error("Unknown special cell type");
 			}
 			if(td::unlikely(virtualization > vm::Cell::max_virtualization)) return td::Status::Error("Too big virtualization");
-
-
-			const uint32_t level = level_mask.get_level();
-			uint32_t level_i = 1, hash_i = 1;
-			const uint32_t mask_diff = level_mask.get_mask() ^ dc->get_level_mask().get_mask();
-			std::array<int, 4> h_levels = {0};
-			vm::Cell* const *old_refs = dc->get_refs();
-			for(; level_i <= level; ++level_i) {
-				if((mask_diff>>(level_i-1))&1) break;
-				if(!level_mask.is_significant(level_i)) continue;
-				if([&](){
-					const uint32_t level_i_ref = isMerkle ? level_i + 1 : level_i;
-					for(uint32_t i = 0; i < refs_cnt; ++i) {
-						if(refs[i]->get_depth(level_i_ref) != old_refs[i]->get_depth(level_i_ref)) return false;
-						if(refs[i]->get_hash(level_i_ref) != old_refs[i]->get_hash(level_i_ref)) return false;
-					}
-					return true;
-				}()) h_levels[hash_i++] = level_i;
-				else break;
-			}
-			if(level_i > level && level_mask == dc->get_level_mask() && virtualization == dc->get_virtualization())
-				return td::Ref(dc);
-
 			const uint32_t hash_count = level_mask.get_hashes_count();
 			DCHECK(level_mask.get_level() <= vm::Cell::max_level);
 			DCHECK(hash_count <= vm::Cell::max_level + 1);
@@ -259,40 +265,8 @@ struct MerkleProofImpl {
 
 			memcpy(data_ptr, data, (bits+7)>>3);
 			for(uint32_t i = 0; i < refs_cnt; ++i) refs_ptr[i] = refs[i].release();
-			for(uint32_t i = 0; i < hash_i; ++i) {
-				hashes_ptr[i] = dc->get_hash(h_levels[i]);
-				depth_ptr[i] = dc->get_depth(h_levels[i]);
-			}
-
-			uint8_t tmp[2];
-			tmp[1] = info.d2();
-			for(; level_i <= level; ++level_i) {
-				if(!level_mask.is_significant(level_i)) continue;
-				tmp[0] = info.d1(level_mask.apply(level_i));
-				#pragma GCC diagnostic push
-				#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-				const uint32_t level_i_ref = isMerkle ? level_i + 1 : level_i;
-				SHA256_CTX sha_ctx;
-				SHA256_Init(&sha_ctx);
-				SHA256_Update(&sha_ctx, tmp, 2);
-				SHA256_Update(&sha_ctx, hashes_ptr[hash_i - 1].as_array().begin(), vm::Cell::hash_bytes);
-				uint16_t depth = 0;
-				uint8_t child_depth_buf[vm::Cell::max_refs * vm::Cell::depth_bytes];
-				for(uint32_t i = 0; i < refs_cnt; i++) {
-					const uint16_t child_depth = refs_ptr[i]->get_depth(level_i_ref);
-					child_depth_buf[(i<<1)] = (uint8_t) (child_depth>>8);
-					child_depth_buf[(i<<1)+1] = (uint8_t) child_depth;
-					depth = std::max(depth, child_depth);
-				}
-				SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes * refs_cnt);
-				if(++depth > vm::Cell::max_depth) return td::Status::Error("Depth is too big");
-				depth_ptr[hash_i] = depth;
-				for(uint32_t i = 0; i < refs_cnt; i++)
-					SHA256_Update(&sha_ctx, refs_ptr[i]->get_hash(level_i_ref).as_array().begin(), vm::Cell::hash_bytes);
-				SHA256_Final(const_cast<uint8_t*>(hashes_ptr[hash_i].as_array().begin()), &sha_ctx);
-				#pragma GCC diagnostic pop
-				++hash_i;
-			}
+			hashes_ptr[0] = dc->get_hash(0);
+			depth_ptr[0] = dc->get_depth(0);
 
 			return td::Ref<vm::DataCell>(data_cell.release(), td::Ref<vm::DataCell>::acquire_t{});
 		}
@@ -365,11 +339,16 @@ struct MerkleProofImpl {
 td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td::Ref<vm::Cell> state_root, vm::CellUsageTree *tree) {
 	PROFILER("merkle_update");
 
+	BOC boc;
+
 	td::Ref<vm::Cell> update_to = MerkleProofImpl(tree).create_from(std::move(state_root));
 	if(update_to.is_null()) return td::Status::Error("failed to generate Merkle update");
+	TRY_STATUS(boc.import_cells(update_to.get(), 1));
+
 	tree->set_use_mark_for_is_loaded(true);
 	td::Ref<vm::Cell> update_from = MerkleProofImpl(tree, true).create_from(std::move(prev_state_root));
 	if(update_from.is_null()) return td::Status::Error("failed to generate Merkle update");
+	TRY_STATUS(boc.import_cells(update_from.get(), 0));
 
 	vm::CellBuilder cb;
 	cb.store_long(static_cast<td::uint8>(vm::Cell::SpecialType::MerkleUpdate), 8);
@@ -382,7 +361,6 @@ td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td:
 	td::Ref<vm::DataCell> state_update = cb.finalize(true);
 	if(state_update.is_null()) return td::Status::Error("failed to generate Merkle update");
 
-	BOC boc;
-	TRY_STATUS(boc.import_cells(state_update.get()));
+	boc.import_root(state_update.get());
 	return boc.serialize();
 }
