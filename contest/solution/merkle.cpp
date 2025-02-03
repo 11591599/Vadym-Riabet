@@ -154,37 +154,37 @@ struct MerkleProofImpl {
 			dfs_usage_tree(refs[i]->virtualize(lc.virt), usage_tree_->get_child(node_id, i));
 	}
 
-	struct MyBuilder : public vm::CellBuilder {
-		void store_bits(const uint8_t* str, uint32_t bit_count) {
-			if(bit_count > 1023) throw vm::CellBuilder::CellCreateError{};
-			memcpy(data, str, (bit_count+7)>>3);
-			bits = bit_count;
-		}
+	struct MyBuilder {
+		std::array<td::Ref<vm::Cell>, 4> refs;
+		uint32_t refs_cnt = 0;
 		void store_ref(td::Ref<vm::Cell> ref) {
 			if(ref.is_null()) throw vm::CellBuilder::CellCreateError{};
 			refs[refs_cnt++] = std::move(ref);
 		}
-		td::Result<td::Ref<vm::DataCell>> create(td::ConstBitPtr data, unsigned bits, td::MutableSpan<td::Ref<vm::Cell>> refs, bool special) {
+		td::Result<td::Ref<vm::DataCell>> create(const MyDataCell* dc) {
+			const uint32_t bits = dc->get_bits();
+			const uint8_t* data = dc->get_data();
+			if(bits > 1023u) return td::Status::Error("Too many data for a cell");
 			vm::Cell::SpecialType type = vm::Cell::SpecialType::Ordinary;
-			if(special) {
+			if(dc->is_special()) {
 				if(bits < 8) return td::Status::Error("Not enough data for a special cell");
-				type = static_cast<vm::Cell::SpecialType>(td::bitstring::bits_load_ulong(data, 8));
+				type = static_cast<vm::Cell::SpecialType>(data[0]);
 				if(type == vm::Cell::SpecialType::Ordinary) return td::Status::Error("Special cell has Ordinary type");
 			}
 			vm::Cell::LevelMask level_mask;
 			td::uint32 virtualization = 0;
 			switch(type) {
 			case vm::Cell::SpecialType::Ordinary: {
-				for(auto& ref : refs) {
-					level_mask = level_mask.apply_or(ref->get_level_mask());
-					virtualization = td::max(virtualization, ref->get_virtualization());
+				for(uint32_t i = 0; i < refs_cnt; ++i) {
+					level_mask = level_mask.apply_or(refs[i]->get_level_mask());
+					virtualization = std::max(virtualization, refs[i]->get_virtualization());
 				}
 				break;
 			}
 			case vm::Cell::SpecialType::PrunnedBranch: {
-				if(refs.size()) return td::Status::Error("PrunnedBranch special cell has a cell reference");
+				if(refs_cnt) return td::Status::Error("PrunnedBranch special cell has a cell reference");
 				if(bits < 16) return td::Status::Error("Not enough data for a PrunnedBranch special cell");
-				level_mask = vm::Cell::LevelMask((td::bitstring::bits_load_ulong(data + 8, 8)) & 0xff);
+				level_mask = vm::Cell::LevelMask(data[1]);
 				auto level = level_mask.get_level();
 				if(level > vm::Cell::max_level || !level) return td::Status::Error("Prunned Branch has an invalid level");
 				if(bits != (2 + level_mask.apply(level - 1).get_hashes_count() * (vm::Cell::hash_bytes + vm::Cell::depth_bytes)) * 8)
@@ -193,31 +193,31 @@ struct MerkleProofImpl {
 			}
 			case vm::Cell::SpecialType::Library: {
 				if(bits != 8 + vm::Cell::hash_bytes * 8) return td::Status::Error("Not enouch data for a Library special cell");
-				if(!refs.empty()) return td::Status::Error("Library special cell has a cell reference");
+				if(refs_cnt) return td::Status::Error("Library special cell has a cell reference");
 				break;
 			}
 			case vm::Cell::SpecialType::MerkleProof: {
 				if(bits != 8 + (vm::Cell::hash_bytes + vm::Cell::depth_bytes) * 8) return td::Status::Error("Not enouch data for a MerkleProof special cell");
-				if(refs.size() != 1) return td::Status::Error("Wrong references count for a MerkleProof special cell");
-				if(td::bitstring::bits_memcmp(data + 8, refs[0]->get_hash(0).as_bitslice().get_ptr(), vm::Cell::hash_bits) != 0)
+				if(refs_cnt != 1) return td::Status::Error("Wrong references count for a MerkleProof special cell");
+				if(std::memcmp(data + 1, refs[0]->get_hash(0).as_array().begin(), vm::Cell::hash_bytes))
 					return td::Status::Error("Hash mismatch in a MerkleProof special cell");
-				if(td::bitstring::bits_load_ulong(data + 8 + vm::Cell::hash_bits, vm::Cell::depth_bytes * 8) != refs[0]->get_depth(0))
-					return td::Status::Error("Depth mismatch in a MerkleProof special cell");
+				// if(td::bitstring::bits_load_ulong(data + 8 + vm::Cell::hash_bits, vm::Cell::depth_bytes * 8) != refs[0]->get_depth(0))
+				// 	return td::Status::Error("Depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().shift_right();
 				virtualization = refs[0]->get_virtualization();
 				break;
 			}
 			case vm::Cell::SpecialType::MerkleUpdate: {
 				if(bits != 8 + (vm::Cell::hash_bytes + vm::Cell::depth_bytes) * 8 * 2) return td::Status::Error("Not enouch data for a MerkleUpdate special cell");
-				if(refs.size() != 2) return td::Status::Error("Wrong references count for a MerkleUpdate special cell");
-				if(td::bitstring::bits_memcmp(data + 8, refs[0]->get_hash(0).as_bitslice().get_ptr(), vm::Cell::hash_bits) != 0)
+				if(refs_cnt != 2) return td::Status::Error("Wrong references count for a MerkleUpdate special cell");
+				if(std::memcmp(data + 1, refs[0]->get_hash(0).as_array().begin(), vm::Cell::hash_bytes))
 					return td::Status::Error("First hash mismatch in a MerkleProof special cell");
-				if(td::bitstring::bits_memcmp(data + 8 + vm::Cell::hash_bits, refs[1]->get_hash(0).as_bitslice().get_ptr(), vm::Cell::hash_bits) != 0)
+				if(std::memcmp(data + 1 + vm::Cell::hash_bytes, refs[1]->get_hash(0).as_array().begin(), vm::Cell::hash_bytes))
 					return td::Status::Error("Second hash mismatch in a MerkleProof special cell");
-				if(td::bitstring::bits_load_ulong(data + 8 + 2 * vm::Cell::hash_bits, vm::Cell::depth_bytes * 8) != refs[0]->get_depth(0))
-					return td::Status::Error("First depth mismatch in a MerkleProof special cell");
-				if(td::bitstring::bits_load_ulong(data + 8 + 2 * vm::Cell::hash_bits + vm::Cell::depth_bytes * 8, vm::Cell::depth_bytes * 8) != refs[1]->get_depth(0))
-					return td::Status::Error("Second depth mismatch in a MerkleProof special cell");
+				// if(td::bitstring::bits_load_ulong(data + 8 + 2 * vm::Cell::hash_bits, vm::Cell::depth_bytes * 8) != refs[0]->get_depth(0))
+				// 	return td::Status::Error("First depth mismatch in a MerkleProof special cell");
+				// if(td::bitstring::bits_load_ulong(data + 8 + 2 * vm::Cell::hash_bits + vm::Cell::depth_bytes * 8, vm::Cell::depth_bytes * 8) != refs[1]->get_depth(0))
+				// 	return td::Status::Error("Second depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().apply_or(refs[1]->get_level_mask()).shift_right();
 				virtualization = td::max(refs[0]->get_virtualization(), refs[1]->get_virtualization());
 				break;
@@ -231,8 +231,8 @@ struct MerkleProofImpl {
 			auto hash_count = type == vm::Cell::SpecialType::PrunnedBranch ? 1 : level_mask.get_hashes_count();
 			DCHECK(hash_count <= vm::Cell::max_level + 1);
 			info.bits_ = bits;
-			info.refs_count_ = refs.size() & 7;
-			info.is_special_ = special;
+			info.refs_count_ = refs_cnt & 7;
+			info.is_special_ = dc->is_special();
 			info.level_mask_ = level_mask.get_mask() & 7;
 			info.hash_count_ = hash_count & 7;
 			info.virtualization_ = virtualization & 7;
@@ -243,13 +243,8 @@ struct MerkleProofImpl {
 			uint16_t* depth_ptr = (uint16_t*) (refs_ptr + refs_cnt);
 			uint8_t* data_ptr = (uint8_t*) (depth_ptr + hash_count);
 
-			td::BitPtr{data_ptr}.copy_from(data, bits);
-			if (bits & 7) {
-				int m = (0x80 >> (bits & 7));
-				unsigned l = bits / 8;
-				data_ptr[l] = static_cast<unsigned char>((data_ptr[l] & -m) | m);
-			}
-			for(size_t i = 0; i < refs.size(); i++) refs_ptr[i] = refs[i].release();
+			memcpy(data_ptr, data, (bits+7)>>3);
+			for(size_t i = 0; i < refs_cnt; ++i) refs_ptr[i] = refs[i].release();
 
 			// NB: be careful with special cells
 			auto total_hash_count = level_mask.get_hashes_count();
@@ -276,18 +271,18 @@ struct MerkleProofImpl {
 				const uint32_t level_i_ref = (type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate) ? level_i + 1 : level_i;
 				uint16_t depth = 0;
 				uint8_t child_depth_buf[vm::Cell::max_refs * vm::Cell::depth_bytes];
-				for(int i = 0; i < info.refs_count_; i++) {
+				for(uint32_t i = 0; i < refs_cnt; i++) {
 					const uint16_t child_depth = refs_ptr[i]->get_depth(level_i_ref);
 					child_depth_buf[(i<<1)] = (uint8_t) (child_depth>>8);
 					child_depth_buf[(i<<1)+1] = (uint8_t) child_depth;
 					depth = std::max(depth, child_depth);
 				}
-				SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes * info.refs_count_);
-				if(info.refs_count_ && ++depth > vm::Cell::max_depth) return td::Status::Error("Depth is too big");
+				SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes * refs_cnt);
+				if(refs_cnt && ++depth > vm::Cell::max_depth) return td::Status::Error("Depth is too big");
 				const uint32_t dest_i = hash_i - hash_i_offset;
 				depth_ptr[dest_i] = depth;
 				// children hash
-				for(int i = 0; i < info.refs_count_; i++)
+				for(uint32_t i = 0; i < refs_cnt; i++)
 					SHA256_Update(&sha_ctx, refs_ptr[i]->get_hash(level_i_ref).as_array().begin(), vm::Cell::hash_bytes);
 				SHA256_Final(const_cast<uint8_t*>(hashes_ptr[dest_i].as_array().begin()), &sha_ctx);
 				#pragma GCC diagnostic pop
@@ -296,9 +291,9 @@ struct MerkleProofImpl {
 			return td::Ref<vm::DataCell>(data_cell.release(), td::Ref<vm::DataCell>::acquire_t{});
 		}
 
-		td::Ref<vm::DataCell> finalize(bool special) {
-			auto res = create(data, size(), td::mutable_span(refs.data(), size_refs()), special);
-			if(res.is_error()) throw CellWriteError{};
+		td::Ref<vm::DataCell> finalize(const MyDataCell* dc) {
+			auto res = create(dc);
+			if(res.is_error()) throw vm::CellBuilder::CellWriteError{};
 			return res.move_as_ok();
 		}
 	};
@@ -358,10 +353,9 @@ struct MerkleProofImpl {
 		vm::Cell** refs = const_cast<vm::Cell**>(dc->get_refs());
 
 		MyBuilder cb;
-		cb.store_bits(dc->get_data(), dc->get_bits());
 		for(uint32_t i = 0; i < nrefs; ++i)
 			cb.store_ref(dfs(refs[i]->virtualize(lc.virt), merkle_depth));
-		auto res = cb.finalize(dc->is_special());
+		auto res = cb.finalize(dc);
 		cells_.emplace(hash, res.get());
 		CHECK(cell->get_hash(0) == res->get_hash(0));
 		return res;
