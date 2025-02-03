@@ -182,7 +182,7 @@ class Continuation : public td::CntObject {
     return *this;
   }
   ~Continuation() override = default;
-  virtual bool serialize(CellBuilder& cb) const {
+  virtual bool serialize(CellBuilder&) const {
     return false;
   }
   bool serialize_ref(CellBuilder& cb) const;
@@ -203,7 +203,7 @@ class QuitCont : public Continuation {
   QuitCont(int _code = 0) : exit_code(_code) {
   }
   ~QuitCont() override = default;
-  td::Ref<Continuation> jump(VmState* st, int& exitcode) const& override {
+  td::Ref<Continuation> jump(VmState*, int& exitcode) const& override {
     exitcode = ~exit_code;
     return {};
   }

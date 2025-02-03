@@ -49,9 +49,8 @@ struct CellSliceInfo {
 struct CellWithStorage : public vm::DataCell {
 	using vm::DataCell::Info;
 	constexpr static int STORAGE_SIZE = 228;
-	inline thread_local static std::vector<char> BIG_STORAGE;
-	inline thread_local static char* NEXT_STORAGE = nullptr;
-	inline thread_local static std::vector<CellWithStorage> CELLS;
+	inline static std::vector<char> BIG_STORAGE;
+	inline static char* NEXT_STORAGE = nullptr;
 
 	char* storage;
 	CellWithStorage(const Info &info, char* n_storage):
@@ -61,15 +60,15 @@ struct CellWithStorage : public vm::DataCell {
 	~CellWithStorage() {}
 	const char* get_storage() const { return storage; }
 	char* get_storage() { return storage; }
-
-	static void clear(const size_t cell_count) {
-		if(const size_t desired_size = STORAGE_SIZE * cell_count; BIG_STORAGE.size() < desired_size)
-			BIG_STORAGE.resize(desired_size);
-		NEXT_STORAGE = BIG_STORAGE.data();
-		CELLS.clear();
-		CELLS.reserve(cell_count);
-	}
 };
+inline static std::vector<CellWithStorage> CELLS;
+static void CLEAR_CELLS(const size_t cell_count) {
+	if(const size_t desired_size = CellWithStorage::STORAGE_SIZE * cell_count; CellWithStorage::BIG_STORAGE.size() < desired_size)
+		CellWithStorage::BIG_STORAGE.resize(desired_size);
+	CellWithStorage::NEXT_STORAGE = CellWithStorage::BIG_STORAGE.data();
+	CELLS.clear();
+	CELLS.reserve(cell_count);
+}
 
 struct CellSerializationInfo {
 	int data_offset;
@@ -178,7 +177,7 @@ struct CellSerializationInfo {
 			#pragma GCC diagnostic pop
 			++hash_i;
 		}
-		return &CellWithStorage::CELLS.emplace_back(info, (char*) data_ptr + data_len);
+		return &CELLS.emplace_back(info, (char*) data_ptr + data_len);
 	}
 };
 
@@ -200,7 +199,7 @@ std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
 		}
 	}
 
-	CellWithStorage::clear(info.cell_count);
+	CLEAR_CELLS(info.cell_count);
 	std::vector<std::pair<vm::Cell*, int>> cell_list(info.cell_count);
 	const auto get_idx_entry = [&](int index)->uint64_t {
 		uint64_t raw;

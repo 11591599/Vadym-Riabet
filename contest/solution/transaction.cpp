@@ -8,7 +8,7 @@
 #include "tdutils/td/utils/ThreadSafeCounter.h"
 #include "profile.hpp"
 
-static int my_try_action_set_code(vm::CellSlice& cs, block::ActionPhase& ap, const block::ActionPhaseConfig& cfg) {
+static int my_try_action_set_code(vm::CellSlice& cs, block::ActionPhase& ap, const block::ActionPhaseConfig&) {
 	block::gen::OutAction::Record_action_set_code rec;
 	if(!tlb::unpack_exact(cs, rec)) return -1;
 	ap.new_code = std::move(rec.new_code);

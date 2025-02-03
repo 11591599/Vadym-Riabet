@@ -1612,7 +1612,7 @@ bool ContestValidateQuery::postcheck_account_updates() {
 	try {
 		if(!ps_.account_dict_->scan_diff(
 						*ns_.account_dict_,
-						[this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra,
+						[this](td::ConstBitPtr key, [[maybe_unused]] int key_len, Ref<vm::CellSlice> old_val_extra,
 									 Ref<vm::CellSlice> new_val_extra) {
 							return postcheck_one_account_update(key, std::move(old_val_extra), std::move(new_val_extra));
 						},
@@ -1688,7 +1688,7 @@ bool ContestValidateQuery::precheck_one_transaction(td::ConstBitPtr acc_id, ton:
 	unsigned c = 0;
 	vm::Dictionary out_msgs{trans.r1.out_msgs, 15};
 	//TODO: replace with ???????? (first value of lambda not used)
-	if (!out_msgs.check_for_each([&c](Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
+	if (!out_msgs.check_for_each([&c](Ref<vm::CellSlice>, td::ConstBitPtr key, [[maybe_unused]] int key_len) {
 				return key.get_uint(15) == c++;
 			}) ||
 			c != (unsigned)trans.outmsg_cnt) {
@@ -1750,7 +1750,7 @@ bool ContestValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Re
 		}
 	//TODO: replace with valdate_check
 		if (!trans_dict.validate_check_extra(
-				[this, acc_id, &old_state, &last_trans_lt_len, &acc_state_hash](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
+				[this, acc_id, &old_state, &last_trans_lt_len, &acc_state_hash](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, [[maybe_unused]] int key_len) {
 					return precheck_one_transaction(acc_id, key.get_uint(64), std::move(value), old_state.last_trans_hash, old_state.last_trans_lt, last_trans_lt_len, acc_state_hash)
 							|| reject_query(PSTRING() << "transaction " << key.get_uint(64) << " of account " << acc_id.to_hex(256) << " is invalid");
 				})) {
@@ -1774,7 +1774,7 @@ bool ContestValidateQuery::precheck_account_transactions() {
 	try {
 	//TODO: replace with valdate_check
 		if (!account_blocks_dict_->validate_check_extra(
-				[this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
+				[this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, [[maybe_unused]] int key_len) {
 					return precheck_one_account_block(key, std::move(value)) || reject_query("invalid AccountBlock for account "s + key.to_hex(256) + " in the new block "s + id_.to_str());
 				})) {
 			return reject_query("invalid ShardAccountBlock dictionary in the new block "s + id_.to_str());
@@ -2298,7 +2298,7 @@ bool ContestValidateQuery::precheck_message_queue_update() {
 	try {
 		if(!ps_.out_msg_queue_->scan_diff(
 						*ns_.out_msg_queue_,
-						[this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra, Ref<vm::CellSlice> new_val_extra) {
+						[this](td::ConstBitPtr key, [[maybe_unused]] int key_len, Ref<vm::CellSlice> old_val_extra, Ref<vm::CellSlice> new_val_extra) {
 							return precheck_one_message_queue_update(key, std::move(old_val_extra), std::move(new_val_extra));
 						},
 						2 /* check augmentation of changed nodes in the new dict */)) {
@@ -2335,7 +2335,7 @@ bool ContestValidateQuery::check_account_dispatch_queue_update(td::Bits256 addr,
 	LogicalTime max_removed_lt = 0;
 	LogicalTime min_added_lt = (LogicalTime)-1;
 	bool res = old_dict.scan_diff(
-			new_dict, [&](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val, Ref<vm::CellSlice> new_val) {
+			new_dict, [&](td::ConstBitPtr key, [[maybe_unused]] int key_len, Ref<vm::CellSlice> old_val, Ref<vm::CellSlice> new_val) {
 				// old_val.not_null() || new_val.not_null()
 				if(old_val.not_null() && new_val.not_null()) return false;
 				td::uint64 lt = key.get_uint(64);
@@ -2426,7 +2426,7 @@ bool ContestValidateQuery::unpack_dispatch_queue_update() {
 	try {
 		bool res = ps_.dispatch_queue_->scan_diff(
 				*ns_.dispatch_queue_,
-				[this](td::ConstBitPtr key, int key_len, Ref<vm::CellSlice> old_val_extra, Ref<vm::CellSlice> new_val_extra) {
+				[this](td::ConstBitPtr key, [[maybe_unused]] int key_len, Ref<vm::CellSlice> old_val_extra, Ref<vm::CellSlice> new_val_extra) {
 					return check_account_dispatch_queue_update(key, ps_.dispatch_queue_->extract_value(std::move(old_val_extra)),
 																ns_.dispatch_queue_->extract_value(std::move(new_val_extra)));
 				},
@@ -3104,7 +3104,7 @@ bool ContestValidateQuery::check_in_msg_descr() {
 	try {
 		//TODO: replace with valdate_check
 		if(!in_msg_dict_->validate_check_extra(
-				[this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
+				[this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, [[maybe_unused]] int key_len) {
 					return check_in_msg(key, std::move(value)) || reject_query("invalid InMsg with key (message hash) "s + key.to_hex(256) + " in the new block "s + id_.to_str());
 				})) {
 			return reject_query("invalid InMsgDescr dictionary in the new block "s + id_.to_str());
@@ -3725,7 +3725,7 @@ bool ContestValidateQuery::check_out_msg_descr() {
 	try {
 		//TODO: replace with valdate_check
 		if(!out_msg_dict_->validate_check_extra(
-				[this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, int key_len) {
+				[this](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr key, [[maybe_unused]] int key_len) {
 					return check_out_msg(key, std::move(value)) || reject_query("invalid OutMsg with key "s + key.to_hex(256) + " in the new block "s + id_.to_str());
 				})) {
 			return reject_query("invalid OutMsgDescr dictionary in the new block "s + id_.to_str());
@@ -4464,7 +4464,7 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
 	// trans_dict.get_minmax_key(min_trans).not_null()
 	// trans_dict.get_minmax_key(max_trans, true).not_null());
 	ton::LogicalTime min_trans_lt = min_trans.to_ulong(), max_trans_lt = max_trans.to_ulong();
-	if(!trans_dict.check_for_each_extra([this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+	if(!trans_dict.check_for_each_extra([this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, [[maybe_unused]] int key_len) {
 				ton::LogicalTime lt = key.get_uint(64);
 				extra.clear();
 				return check_one_transaction(account, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
