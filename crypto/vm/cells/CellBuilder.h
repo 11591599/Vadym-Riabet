@@ -34,7 +34,7 @@ class CellBuilder : public td::CntObject {
   struct CellWriteError {};
   struct CellCreateError {};
 
- private:
+ protected:
   unsigned bits;
   unsigned refs_cnt;
   std::array<Ref<Cell>, Cell::max_refs> refs;
@@ -210,7 +210,7 @@ class CellBuilder : public td::CntObject {
     }
   }
 
- private:
+ protected:
   void flush(unsigned char d[2]) const;
   bool prepare_reserve(std::size_t bit_count);
   bool can_extend_by_fast(unsigned bits_req) const {
