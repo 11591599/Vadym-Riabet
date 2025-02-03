@@ -182,7 +182,7 @@ struct CellSerializationInfo {
 };
 
 std::vector<td::Ref<vm::Cell>> deserialize(const td::Slice& data) {
-	PROFILER("deserialize");
+	// PROFILER("deserialize");
 	CellSliceInfo info(data.ubegin());
 	const uint8_t* index_ptr = nullptr;
 	const uint8_t* const cells_ptr = data.ubegin() + info.data_offset;

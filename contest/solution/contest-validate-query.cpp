@@ -135,7 +135,7 @@ void ContestValidateQuery::finish_query() {
  * Then the function also sends requests to the ValidatorManager to fetch blocks and shard stated.
  */
 void ContestValidateQuery::start_up() {
-	PROFILER("start_up");
+	// PROFILER("start_up");
 	rand_seed_.set_zero();
 	if(ShardIdFull(id_) != shard_) {
 		reject_query(PSTRING() << "block candidate belongs to shard " << ShardIdFull(id_).to_str() << " different from current shard " << shard_.to_str());
@@ -209,7 +209,7 @@ void ContestValidateQuery::start_up() {
  * @returns True if the block candidate was successfully unpacked, false otherwise.
  */
 bool ContestValidateQuery::unpack_block_candidate() {
-	PROFILER("unpack");
+	// PROFILER("unpack");
 	vm::BagOfCells boc1;
 	// 1. deserialize block itself
 	auto res1 = boc1.deserialize(block_data);
@@ -937,7 +937,7 @@ bool ContestValidateQuery::init_next_state() {
  * @returns True if the request for neighbor message queues was successful, false otherwise.
  */
 bool ContestValidateQuery::request_neighbor_queues() {
-	PROFILER("req_neighbor_Qs");
+	// PROFILER("req_neighbor_Qs");
 	auto neighbor_list = new_shard_conf_->get_neighbor_shard_hash_ids(shard_);
 	for (ton::BlockId blk_id : neighbor_list) {
 		if (blk_id.seqno == 0 && blk_id.shard_full() != shard_) {
@@ -1060,7 +1060,7 @@ bool ContestValidateQuery::register_mc_state(Ref<MasterchainStateQ> other_mc_sta
  * @returns True if the auxiliary masterchain state is successfully requested, false otherwise.
  */
 bool ContestValidateQuery::request_aux_mc_state(BlockSeqno seqno, Ref<MasterchainStateQ>& state) {
-	PROFILER("request_aux_mc_state");
+	// PROFILER("request_aux_mc_state");
 	if (mc_state_.is_null()) {
 		return fatal_error(PSTRING() << "cannot find masterchain block with seqno " << seqno
 																 << " to load corresponding state because no masterchain state is known yet");
@@ -1608,7 +1608,7 @@ bool ContestValidateQuery::postcheck_one_account_update(td::ConstBitPtr acc_id, 
  * @returns True if the pre-check is successful, False otherwise.
  */
 bool ContestValidateQuery::postcheck_account_updates() {
-	PROFILER("postchck_acc_upds");
+	// PROFILER("postchck_acc_upds");
 	try {
 		if(!ps_.account_dict_->scan_diff(
 						*ns_.account_dict_,
@@ -4060,7 +4060,7 @@ std::unique_ptr<block::Account> ContestValidateQuery::unpack_account(td::ConstBi
  * @returns True if the transaction is valid, false otherwise.
  */
 bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first, bool is_last) {
-	PROFILER("chk_one_trans");
+	// PROFILER("chk_one_trans");
 	const StdSmcAddress& addr = account.addr;
 	block::gen::Transaction::Record trans;
 	block::gen::HASH_UPDATE::Record hash_upd;
@@ -4452,7 +4452,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
  * @returns True if the account transactions are valid, false otherwise.
  */
 bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_addr, Ref<vm::CellSlice> acc_blk_root) {
-	PROFILER("chk_account_trans");
+	// PROFILER("chk_account_trans");
 	block::gen::AccountBlock::Record acc_blk;
 	tlb::csr_unpack(std::move(acc_blk_root), acc_blk) && acc_blk.account_addr == acc_addr;
 	auto account_p = unpack_account(acc_addr.cbits());
@@ -4669,7 +4669,7 @@ Ref<vm::Cell> ContestValidateQuery::get_virt_state_root(td::Bits256 block_root_h
  * @returns True if the validation is successful, False otherwise.
  */
 bool ContestValidateQuery::try_validate() {
-	PROFILER("try_validate");
+	// PROFILER("try_validate");
 	if(pending) return true;
 	try {
 		if(!stage_) {
