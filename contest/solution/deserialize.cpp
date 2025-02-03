@@ -144,19 +144,20 @@ struct CellSerializationInfo {
 		uint8_t tmp[2];
 		tmp[1] = info.d2();
 		for(td::uint32 level_i = 0, hash_i = 0, level = level_mask.get_level(); level_i <= level; ++level_i) {
-			if(level_i && !((level_mask.get_mask() >> (level_i - 1)) & 1)) continue;
+			if(!level_mask.is_significant(level_i)) continue;
 			if(hash_i < hash_i_offset) {
 				++hash_i;
 				continue;
 			}
+			const uint32_t dest_i = hash_i - hash_i_offset;
 			tmp[0] = info.d1(level_mask.apply(level_i));
 			#pragma GCC diagnostic push
 			#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 			SHA256_CTX sha_ctx;
 			SHA256_Init(&sha_ctx);
 			SHA256_Update(&sha_ctx, tmp, 2);
-			if(hash_i == hash_i_offset) SHA256_Update(&sha_ctx, data_ptr, data_len);
-			else SHA256_Update(&sha_ctx, hashes_ptr[hash_i - hash_i_offset - 1].as_array().begin(), vm::Cell::hash_bytes);
+			if(dest_i) SHA256_Update(&sha_ctx, hashes_ptr[dest_i - 1].as_array().begin(), vm::Cell::hash_bytes);
+			else SHA256_Update(&sha_ctx, data_ptr, data_len);
 			const uint32_t level_i_ref = (type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate) ? level_i + 1 : level_i;
 			// calc depth
 			uint16_t depth = 0;
@@ -169,7 +170,6 @@ struct CellSerializationInfo {
 			}
 			SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes * refs_cnt);
 			if(refs_cnt) ++depth;
-			const uint32_t dest_i = hash_i - hash_i_offset;
 			depth_ptr[dest_i] = depth;
 			// children hash
 			for(int i = 0; i < refs_cnt; i++)

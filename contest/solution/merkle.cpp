@@ -181,28 +181,14 @@ struct MerkleProofImpl {
 				}
 				break;
 			}
-			case vm::Cell::SpecialType::PrunnedBranch: {
-				if(refs_cnt) return td::Status::Error("PrunnedBranch special cell has a cell reference");
-				if(bits < 16) return td::Status::Error("Not enough data for a PrunnedBranch special cell");
-				level_mask = vm::Cell::LevelMask(data[1]);
-				auto level = level_mask.get_level();
-				if(level > vm::Cell::max_level || !level) return td::Status::Error("Prunned Branch has an invalid level");
-				if(bits != (2 + level_mask.apply(level - 1).get_hashes_count() * (vm::Cell::hash_bytes + vm::Cell::depth_bytes)) * 8)
-					return td::Status::Error("Not enouch data for a PrunnedBranch special cell");
-				break;
-			}
-			case vm::Cell::SpecialType::Library: {
-				if(bits != 8 + vm::Cell::hash_bytes * 8) return td::Status::Error("Not enouch data for a Library special cell");
-				if(refs_cnt) return td::Status::Error("Library special cell has a cell reference");
-				break;
-			}
 			case vm::Cell::SpecialType::MerkleProof: {
 				if(bits != 8 + (vm::Cell::hash_bytes + vm::Cell::depth_bytes) * 8) return td::Status::Error("Not enouch data for a MerkleProof special cell");
 				if(refs_cnt != 1) return td::Status::Error("Wrong references count for a MerkleProof special cell");
 				if(std::memcmp(data + 1, refs[0]->get_hash(0).as_array().begin(), vm::Cell::hash_bytes))
 					return td::Status::Error("Hash mismatch in a MerkleProof special cell");
-				// if(td::bitstring::bits_load_ulong(data + 8 + vm::Cell::hash_bits, vm::Cell::depth_bytes * 8) != refs[0]->get_depth(0))
-				// 	return td::Status::Error("Depth mismatch in a MerkleProof special cell");
+				const uint16_t sd = *(const uint16_t*)(data + 1 + vm::Cell::hash_bytes);
+				if(uint16_t((sd>>8)|(sd<<8)) != refs[0]->get_depth(0))
+					return td::Status::Error("Depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().shift_right();
 				virtualization = refs[0]->get_virtualization();
 				break;
@@ -214,10 +200,12 @@ struct MerkleProofImpl {
 					return td::Status::Error("First hash mismatch in a MerkleProof special cell");
 				if(std::memcmp(data + 1 + vm::Cell::hash_bytes, refs[1]->get_hash(0).as_array().begin(), vm::Cell::hash_bytes))
 					return td::Status::Error("Second hash mismatch in a MerkleProof special cell");
-				// if(td::bitstring::bits_load_ulong(data + 8 + 2 * vm::Cell::hash_bits, vm::Cell::depth_bytes * 8) != refs[0]->get_depth(0))
-				// 	return td::Status::Error("First depth mismatch in a MerkleProof special cell");
-				// if(td::bitstring::bits_load_ulong(data + 8 + 2 * vm::Cell::hash_bits + vm::Cell::depth_bytes * 8, vm::Cell::depth_bytes * 8) != refs[1]->get_depth(0))
-				// 	return td::Status::Error("Second depth mismatch in a MerkleProof special cell");
+				const uint16_t sd0 = *(const uint16_t*)(data + 1 + 2*vm::Cell::hash_bytes);
+				const uint16_t sd1 = *(const uint16_t*)(data + 3 + 2*vm::Cell::hash_bytes);
+				if(uint16_t((sd0>>8)|(sd0<<8)) != refs[0]->get_depth(0))
+					return td::Status::Error("First depth mismatch in a MerkleProof special cell");
+				if(uint16_t((sd1>>8)|(sd1<<8)) != refs[1]->get_depth(0))
+					return td::Status::Error("Second depth mismatch in a MerkleProof special cell");
 				level_mask = refs[0]->get_level_mask().apply_or(refs[1]->get_level_mask()).shift_right();
 				virtualization = td::max(refs[0]->get_virtualization(), refs[1]->get_virtualization());
 				break;
@@ -226,9 +214,10 @@ struct MerkleProofImpl {
 				return td::Status::Error("Unknown special cell type");
 			}
 			MyDataCell::Info info;
+			CHECK(!virtualization);
 			if(td::unlikely(virtualization > vm::Cell::max_virtualization)) return td::Status::Error("Too big virtualization");
 			DCHECK(level_mask.get_level() <= vm::Cell::max_level);
-			auto hash_count = type == vm::Cell::SpecialType::PrunnedBranch ? 1 : level_mask.get_hashes_count();
+			const uint32_t hash_count = level_mask.get_hashes_count();
 			DCHECK(hash_count <= vm::Cell::max_level + 1);
 			info.bits_ = bits;
 			info.refs_count_ = refs_cnt & 7;
@@ -244,30 +233,22 @@ struct MerkleProofImpl {
 			uint8_t* data_ptr = (uint8_t*) (depth_ptr + hash_count);
 
 			memcpy(data_ptr, data, (bits+7)>>3);
-			for(size_t i = 0; i < refs_cnt; ++i) refs_ptr[i] = refs[i].release();
+			for(uint32_t i = 0; i < refs_cnt; ++i) refs_ptr[i] = refs[i].release();
+			hashes_ptr[0] = dc->get_hash(0);
+			depth_ptr[0] = dc->get_depth(0);
 
-			// NB: be careful with special cells
-			auto total_hash_count = level_mask.get_hashes_count();
-			auto hash_i_offset = total_hash_count - hash_count;
-			for(td::uint32 level_i = 0, hash_i = 0, level = level_mask.get_level(); level_i <= level; level_i++) {
+			uint8_t tmp[2];
+			tmp[1] = info.d2();
+			const uint32_t level = level_mask.get_level();
+			for(uint32_t level_i = 1, hash_i = 1; level_i <= level; ++level_i) {
 				if(!level_mask.is_significant(level_i)) continue;
-				SCOPE_EXIT { ++hash_i; };
-				if(hash_i < hash_i_offset) continue;
-				uint8_t tmp[2];
 				tmp[0] = info.d1(level_mask.apply(level_i));
-				tmp[1] = info.d2();
 				#pragma GCC diagnostic push
 				#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 				SHA256_CTX sha_ctx;
 				SHA256_Init(&sha_ctx);
 				SHA256_Update(&sha_ctx, tmp, 2);
-				if(hash_i == hash_i_offset) {
-					DCHECK(level_i == 0 || type == vm::Cell::SpecialType::PrunnedBranch);
-					SHA256_Update(&sha_ctx, data_ptr, (bits + 7) >> 3);
-				} else {
-					DCHECK(level_i != 0 && type != vm::Cell::SpecialType::PrunnedBranch);
-					SHA256_Update(&sha_ctx, hashes_ptr[hash_i - hash_i_offset - 1].as_array().begin(), vm::Cell::hash_bytes);
-				}
+				SHA256_Update(&sha_ctx, hashes_ptr[hash_i - 1].as_array().begin(), vm::Cell::hash_bytes);
 				const uint32_t level_i_ref = (type == vm::Cell::SpecialType::MerkleProof || type == vm::Cell::SpecialType::MerkleUpdate) ? level_i + 1 : level_i;
 				uint16_t depth = 0;
 				uint8_t child_depth_buf[vm::Cell::max_refs * vm::Cell::depth_bytes];
@@ -278,14 +259,14 @@ struct MerkleProofImpl {
 					depth = std::max(depth, child_depth);
 				}
 				SHA256_Update(&sha_ctx, child_depth_buf, vm::Cell::depth_bytes * refs_cnt);
-				if(refs_cnt && ++depth > vm::Cell::max_depth) return td::Status::Error("Depth is too big");
-				const uint32_t dest_i = hash_i - hash_i_offset;
-				depth_ptr[dest_i] = depth;
+				if(++depth > vm::Cell::max_depth) return td::Status::Error("Depth is too big");
+				depth_ptr[hash_i] = depth;
 				// children hash
 				for(uint32_t i = 0; i < refs_cnt; i++)
 					SHA256_Update(&sha_ctx, refs_ptr[i]->get_hash(level_i_ref).as_array().begin(), vm::Cell::hash_bytes);
-				SHA256_Final(const_cast<uint8_t*>(hashes_ptr[dest_i].as_array().begin()), &sha_ctx);
+				SHA256_Final(const_cast<uint8_t*>(hashes_ptr[hash_i].as_array().begin()), &sha_ctx);
 				#pragma GCC diagnostic pop
+				++hash_i;
 			}
 
 			return td::Ref<vm::DataCell>(data_cell.release(), td::Ref<vm::DataCell>::acquire_t{});
@@ -314,16 +295,10 @@ struct MerkleProofImpl {
 			vm::CellBuilder cb;
 			cb.store_long(static_cast<td::uint8>(vm::Cell::SpecialType::PrunnedBranch), 8);
 			cb.store_long(level_mask.apply_or(vm::Cell::LevelMask::one_level(merkle_depth + 1)).get_mask(), 8);
-			for(uint32_t i = 0; i <= level; ++i) {
-				if(level_mask.is_significant(i)) {
-					cb.store_bytes(cell->get_hash(i).as_slice());
-				}
-			}
-			for(uint32_t i = 0; i <= level; ++i) {
-				if (level_mask.is_significant(i)) {
-					cb.store_long(cell->get_depth(i), 16);
-				}
-			}
+			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i))
+				cb.store_bytes(cell->get_hash(i).as_slice());
+			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i))
+				cb.store_long(cell->get_depth(i), 16);
 			auto res = cb.finalize(true);
 			cells_.emplace(hash, res.get());
 			CHECK(cell->get_hash(0) == res->get_hash(0));

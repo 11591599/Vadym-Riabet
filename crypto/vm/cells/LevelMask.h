@@ -56,9 +56,7 @@ class LevelMask {
   }
   bool is_significant(td::uint32 level) const {
     DCHECK(level < 32);
-    bool res = level == 0 || ((mask_ >> (level - 1)) % 2 != 0);
-    CHECK(res == (apply(level).get_level() == level));
-    return res;
+    return !level || ((mask_ >> (level - 1)) & 1u);
   }
 
   bool operator==(const LevelMask& other) const {
