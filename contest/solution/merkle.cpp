@@ -2,16 +2,12 @@
 
 #include <openssl/sha.h>
 
-#include "crypto/vm/cells/CellBuilder.h"
-#include "crypto/vm/cells/CellSlice.h"
-#include "crypto/vm/cells/CellWithStorage.h"
+#include "crypto/vm/cells/DataCell.h"
 #include "crypto/vm/hash-set.h"
-#include "td/utils/HashMap.h"
 
 #include "profile.hpp"
 
 struct MyDataCell : public vm::DataCell {
-	const vm::Cell::Hash* get_hashes() const { return (const vm::Cell::Hash*) get_storage(); }
 	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
 };
 
@@ -28,9 +24,7 @@ struct Node {
 	bool is_special;
 	bool use_storage = false;
 
-	uint32_t get_serialized_size() const {
-		return (bits + 23) >> 3;
-	}
+	uint32_t get_serialized_size() const { return (bits + 23) >> 3; }
 
 	void serialize(uint8_t* &buff) const {
 		const uint32_t len = get_serialized_size();
@@ -42,6 +36,14 @@ struct Node {
 	}
 };
 static std::vector<Node> nodes;
+
+void STORE_HASH(const vm::Cell::Hash &h) {
+	storage.insert(storage.end(), h.as_array().begin(), h.as_array().end());
+}
+void STORE_DEPTH(uint16_t d) {
+	storage.push_back(uint8_t(d>>8));
+	storage.push_back(d&0xffu);
+}
 
 td::BufferSlice serialize() {
 	uint32_t ref_byte_size=1, offset_byte_size=1;
@@ -85,9 +87,7 @@ struct MerkleProofImpl {
 		if(from) dfs_usage_tree(cell, usage_tree_->root_id());
 		try {
 			return dfs(cell, cell->get_level());
-		} catch (vm::CellBuilder::CellWriteError &) {
-			return -1;
-		} catch (vm::CellBuilder::CellCreateError &) {
+		} catch(std::runtime_error&) {
 			return -1;
 		}
 	}
@@ -138,7 +138,7 @@ struct MerkleProofImpl {
 			}
 			const auto level_mask = cell->get_level_mask().apply(3);
 			const uint32_t level = level_mask.get_level();
-			if(merkle_depth < level) throw vm::CellBuilder::CellWriteError();
+			if(merkle_depth < level) throw std::runtime_error("merkle_depth < level");
 
 			const int ind = (int) nodes.size();
 			Node &node = nodes.emplace_back();
@@ -151,15 +151,8 @@ struct MerkleProofImpl {
 
 			storage.push_back(static_cast<td::uint8>(vm::Cell::SpecialType::PrunnedBranch));
 			storage.push_back(static_cast<td::uint8>(node.mask));
-			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i)) {
-				const std::array<uint8_t, 32> &H = cell->get_hash(i).as_array();
-				storage.insert(storage.end(), H.begin(), H.end());
-			}
-			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i)) {
-				const uint16_t D = cell->get_depth(i);
-				storage.push_back(uint8_t(D>>8));
-				storage.push_back(D&0xffu);
-			}
+			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i)) STORE_HASH(cell->get_hash(i));
+			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i)) STORE_DEPTH(cell->get_depth(i));
 			node.bits = 8u * ((uint32_t) storage.size() - node.storage_ind);
 
 			return ind;
@@ -221,34 +214,30 @@ struct MerkleProofImpl {
 td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td::Ref<vm::Cell> state_root, vm::CellUsageTree *tree) {
 	PROFILER("merkle_update");
 
-	vm::CellBuilder cb;
-	cb.store_long(static_cast<td::uint8>(vm::Cell::SpecialType::MerkleUpdate), 8);
-	cb.store_bytes(prev_state_root->get_hash(0).as_slice());
-	cb.store_bytes(state_root->get_hash(0).as_slice());
-	cb.store_long(prev_state_root->get_depth(0), vm::Cell::depth_bytes * 8);
-	cb.store_long(state_root->get_depth(0), vm::Cell::depth_bytes * 8);
-	cb.store_ref(prev_state_root);
-	cb.store_ref(state_root);
-	td::Ref<vm::DataCell> state_update = cb.finalize(true);
-	if(state_update.is_null()) return td::Status::Error("failed to generate Merkle update");
-
 	storage.clear();
 	nodes.clear();
 
-	const int update_to = MerkleProofImpl(tree).create_from(std::move(state_root));
+	const int update_to = MerkleProofImpl(tree).create_from(state_root);
 	if(update_to == -1) return td::Status::Error("failed to generate Merkle update");
 	tree->set_use_mark_for_is_loaded(true);
-	const int update_from = MerkleProofImpl(tree, true).create_from(std::move(prev_state_root));
+	const int update_from = MerkleProofImpl(tree, true).create_from(prev_state_root);
 	if(update_from == -1) return td::Status::Error("failed to generate Merkle update");
 
 	Node &node = nodes.emplace_back();
-	node.data = state_update->get_data();
+	node.use_storage = true;
+	node.storage_ind = (uint32_t) storage.size();
 	node.mask = (nodes[update_from].mask | nodes[update_to].mask)>>1;
-	node.bits = state_update->get_bits();
+	node.bits = 8 + (vm::Cell::hash_bytes + vm::Cell::depth_bytes) * 8 * 2;
 	node.n_refs = 2;
 	node.refs[0] = update_from;
 	node.refs[1] = update_to;
 	node.is_special = true;
+
+	storage.push_back(static_cast<td::uint8>(vm::Cell::SpecialType::MerkleUpdate));
+	STORE_HASH(prev_state_root->get_hash(0));
+	STORE_HASH(state_root->get_hash(0));
+	STORE_DEPTH(prev_state_root->get_depth(0));
+	STORE_DEPTH(state_root->get_depth(0));
 
 	return serialize();
 }
