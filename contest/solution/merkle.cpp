@@ -7,21 +7,11 @@
 
 #include "profile.hpp"
 
-static std::vector<uint8_t> serialized_data;
-using rev_u8_it = std::reverse_iterator<uint8_t*>;
-static void push_uint32(uint32_t x) {
-	const rev_u8_it e((uint8_t*)&x);
-	serialized_data.insert(serialized_data.end(), e-4, e);
-} 
-static void push_uint64(uint64_t x) {
-	const rev_u8_it e((uint8_t*)&x);
-	serialized_data.insert(serialized_data.end(), e-8, e);
-} 
 
 struct MyDataCell : public vm::DataCell {
 	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
 
-	void serialize() const {
+	void serialize(std::vector<uint8_t> &serialized_data) const {
 		serialized_data.push_back(info_.d1());
 		serialized_data.push_back(info_.d2());
 		const uint8_t *data = get_data();
@@ -30,16 +20,15 @@ struct MyDataCell : public vm::DataCell {
 };
 
 struct BOC {
-	struct CellInfo {
-		const MyDataCell *dc_ref;
-		std::array<int, 4> ref_idx;
-		CellInfo(const MyDataCell *_dc): dc_ref(_dc) {}
-		CellInfo(const MyDataCell *_dc, const std::array<int, 4>& _ref_list): dc_ref(_dc), ref_idx(_ref_list) {}
-	};
-	std::vector<CellInfo> cells;
-	vm::HashMap<int> h2i;
 	int num_refs = 0;
-	uint64_t data_bytes = 0;
+	struct CellInfo {
+		int data_offset;
+		std::array<int, 4> refs;
+		CellInfo(int data_offset): data_offset(data_offset), refs({-1, -1, -1, -1}) {}
+	};
+	std::vector<uint8_t> serialized_data;
+	std::vector<CellInfo> cell_infos;
+	vm::HashMap<int> h2i;
 
 	td::Result<int> import_cell(const vm::Cell *cell, int depth) {
 		if(depth > 1024) return td::Status::Error("error while importing a cell into a bag of cells: cell depth too large");
@@ -50,24 +39,21 @@ struct BOC {
 		if(cell->get_virtualization()) return td::Status::Error("error while importing a cell into a bag of cells: cell has non-zero virtualization level");
 		TRY_RESULT(loaded_dc, cell->load_cell());
 		const MyDataCell *dc = (const MyDataCell*) loaded_dc.data_cell.get();
-		data_bytes += dc->get_serialized_size();
 		const uint32_t size_refs = dc->size_refs();
-		int ind;
+		std::array<int, 4> refs;
 		if(size_refs) {
 			num_refs += size_refs;
-			std::array<int, 4> refs;
 			vm::Cell* const* dc_refs = dc->get_refs();
 			for(uint32_t i = 0; i < size_refs; ++i) {
 				auto r = import_cell(dc_refs[i], depth+1);
 				if(r.is_error()) return r.move_as_error();
 				refs[i] = r.move_as_ok();
 			}
-			ind = (int) cells.size();
-			cells.emplace_back(dc, refs);
-		} else {
-			ind = (int) cells.size();
-			cells.emplace_back(dc);
 		}
+		const int ind = (int) cell_infos.size();
+		CellInfo &ci = cell_infos.emplace_back((int) serialized_data.size());
+		dc->serialize(serialized_data);
+		std::memcpy(ci.refs.data(), refs.data(), size_refs * sizeof(int));
 		h2i.emplace(hash, ind);
 		return ind;
 	}
@@ -79,24 +65,41 @@ struct BOC {
 	}
 
 	td::BufferSlice serialize() {
-		const uint64_t data_size = data_bytes + (uint64_t)num_refs * 4;
-		serialized_data.clear();
-		push_uint32(0xb5ee9c72u);
-		serialized_data.push_back(4);
-		serialized_data.push_back(8);
-		push_uint32((uint32_t) cells.size());
-		push_uint32(1);
-		push_uint32(0);
-		push_uint64(data_size);
-		push_uint32(0);
-		for(int i = 0; i < (int) cells.size(); ++i) {
-			const auto& dc_info = cells[cells.size() - 1 - i];
-			dc_info.dc_ref->serialize();
-			const uint32_t size_refs = dc_info.dc_ref->size_refs();
-			for(uint32_t j = 0; j < size_refs; ++j)
-				push_uint32((uint32_t) cells.size() - 1 - dc_info.ref_idx[j]);
+		uint32_t ref_byte_size=1, offset_byte_size=1;
+		while(cell_infos.size() >= (1ULL << (ref_byte_size << 3))) ++ref_byte_size;
+		const uint64_t data_bytes = serialized_data.size();
+		const uint64_t data_size = data_bytes + (uint64_t)num_refs * ref_byte_size;
+		while(data_size >= (1ULL << (offset_byte_size << 3))) ++offset_byte_size;
+		const uint64_t total_size = 4 + 1 + 1 + 3 * ref_byte_size + offset_byte_size + ref_byte_size + data_size;
+		td::BufferSlice res(total_size);
+		uint8_t* buff = (uint8_t*) res.data();
+		const auto store_uint = [&](uint64_t value, uint32_t bytes) {
+			uint8_t* ptr = buff += bytes;
+			while(bytes--) {
+				*--ptr = value & 0xff;
+				value >>= 8;
+			}
+		};
+		const auto store_ref = [&](uint64_t value) { store_uint(value, ref_byte_size); };
+		const auto store_offset = [&](uint64_t value) { store_uint(value, offset_byte_size); };
+		store_uint(0xb5ee9c72u, 4);
+		store_uint(ref_byte_size, 1);
+		store_uint(offset_byte_size, 1);
+		store_ref(cell_infos.size());
+		store_ref(1);
+		store_ref(0);
+		store_offset(data_size);
+		store_ref(0);
+		for(int i = 0; i < (int) cell_infos.size(); ++i) {
+			const int i2 = (int) cell_infos.size() - 1 - i;
+			const CellInfo& ci = cell_infos[i2];
+			const int len = (i ? cell_infos[i2+1].data_offset : (int) data_bytes) - ci.data_offset;
+			std::memcpy(buff, serialized_data.data()+ci.data_offset, len);
+			buff += len;
+			for(uint32_t j = 0; j < 4 && ci.refs[j] != -1; ++j)
+				store_ref(cell_infos.size() - 1 - ci.refs[j]);
 		}
-		return td::BufferSlice((char*) serialized_data.data(), serialized_data.size());
+		return res;
 	}
 };
 
