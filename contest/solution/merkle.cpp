@@ -10,19 +10,23 @@
 
 #include "profile.hpp"
 
-
 struct MyDataCell : public vm::DataCell {
 	const vm::Cell::Hash* get_hashes() const { return (const vm::Cell::Hash*) get_storage(); }
 	vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
 };
 
+static std::vector<uint8_t> storage;
 struct Node {
-	const uint8_t* data;
+	union {
+		const uint8_t* data;
+		uint32_t storage_ind;
+	};
 	uint32_t mask;
 	uint32_t bits;
 	uint32_t n_refs;
 	std::array<int, 4> refs;
 	bool is_special;
+	bool use_storage = false;
 
 	uint32_t get_serialized_size() const {
 		return (bits + 23) >> 3;
@@ -33,11 +37,10 @@ struct Node {
 		buff[0] = uint8_t(n_refs + 8u * is_special + 32u * mask);
 		buff[1] = uint8_t(2u * (bits>>3));
 		if(bits & 0b111u) ++buff[1];
-		std::memcpy(buff+2, data, len-2);
+		std::memcpy(buff+2, use_storage ? &storage[storage_ind] : data, len-2);
 		buff += len;
 	}
 };
-static std::vector<td::Ref<vm::DataCell>> prunned_cells;
 static std::vector<Node> nodes;
 
 td::BufferSlice serialize() {
@@ -136,22 +139,29 @@ struct MerkleProofImpl {
 			const auto level_mask = cell->get_level_mask().apply(3);
 			const uint32_t level = level_mask.get_level();
 			if(merkle_depth < level) throw vm::CellBuilder::CellWriteError();
-			vm::CellBuilder cb;
-			cb.store_long(static_cast<td::uint8>(vm::Cell::SpecialType::PrunnedBranch), 8);
-			cb.store_long(level_mask.apply_or(vm::Cell::LevelMask::one_level(merkle_depth + 1)).get_mask(), 8);
-			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i))
-				cb.store_bytes(cell->get_hash(i).as_slice());
-			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i))
-				cb.store_long(cell->get_depth(i), 16);
+
 			const int ind = (int) nodes.size();
-			const td::Ref<vm::DataCell> &data_cell = prunned_cells.emplace_back(cb.finalize(true));
 			Node &node = nodes.emplace_back();
-			node.data = data_cell->get_data();
-			node.mask = node.data[1];
-			node.bits = data_cell->get_bits();
+			node.use_storage = true;
+			node.storage_ind = (uint32_t) storage.size();
+			node.mask = level_mask.apply_or(vm::Cell::LevelMask::one_level(merkle_depth + 1)).get_mask();
 			node.n_refs = 0;
-			node.is_special = data_cell->is_special();
+			node.is_special = true;
 			cells_.emplace(hash, ind);
+
+			storage.push_back(static_cast<td::uint8>(vm::Cell::SpecialType::PrunnedBranch));
+			storage.push_back(static_cast<td::uint8>(node.mask));
+			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i)) {
+				const std::array<uint8_t, 32> &H = cell->get_hash(i).as_array();
+				storage.insert(storage.end(), H.begin(), H.end());
+			}
+			for(uint32_t i = 0; i <= level; ++i) if(level_mask.is_significant(i)) {
+				const uint16_t D = cell->get_depth(i);
+				storage.push_back(uint8_t(D>>8));
+				storage.push_back(D&0xffu);
+			}
+			node.bits = 8u * ((uint32_t) storage.size() - node.storage_ind);
+
 			return ind;
 		};
 
@@ -222,7 +232,7 @@ td::Result<td::BufferSlice> merkle_update(td::Ref<vm::Cell> prev_state_root, td:
 	td::Ref<vm::DataCell> state_update = cb.finalize(true);
 	if(state_update.is_null()) return td::Status::Error("failed to generate Merkle update");
 
-	prunned_cells.clear();
+	storage.clear();
 	nodes.clear();
 
 	const int update_to = MerkleProofImpl(tree).create_from(std::move(state_root));
