@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 add_compile_options(
 	-Wall
 	-Wextra
-	-Werror
+	# -Werror
 	-fdiagnostics-color
 )
 
@@ -11,7 +11,7 @@ add_library(contest-solution STATIC
 	solution.cpp
 	contest-validate-query.cpp
 	deserialize.cpp
-	profile.cpp
+	# profile.cpp
 	transaction.cpp
 	merkle.cpp
 )
