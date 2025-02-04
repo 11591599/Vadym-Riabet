@@ -551,8 +551,6 @@ struct CellStorageStat {
 		seen.clear();
 	}
 
-	static constexpr uint32_t ERROR = uint32_t(-1);
-
 	struct MyDataCell : public vm::DataCell {
 		vm::Cell* const* get_refs() const { return info_.get_refs(get_storage()); }
 	};
