@@ -25,6 +25,7 @@
 
 #include <memory>
 #include <cstring>
+#include <cstdlib>
 
 #include <openssl/sha.h>
 

@@ -64,8 +64,8 @@ struct HashMap {
 			const int H = (int) hs.size();
 			const uint64_t m = buckets.size()-1;
 			for(int i = 0; i < H; ++i) {
-				const uint64_t b = (*(const uint64_t*) get<0>(hs[i]).as_array().data()) & m;
-				get<2>(hs[i]) = buckets[b];
+				const uint64_t b = (*(const uint64_t*) std::get<0>(hs[i]).as_array().data()) & m;
+				std::get<2>(hs[i]) = buckets[b];
 				buckets[b] = i;
 			}
 		} else {

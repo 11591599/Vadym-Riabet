@@ -2290,7 +2290,6 @@ void ValidatorManagerImpl::update_shards() {
     }
   }
 
-  bool validating_masterchain = false;
   if (allow_validate_) {
     for (auto &desc : new_shards) {
       auto shard = desc.first;
@@ -2307,9 +2306,6 @@ void ValidatorManagerImpl::update_shards() {
       auto validator_id = get_validator(shard, val_set);
 
       if (!validator_id.is_zero()) {
-        if (shard.is_masterchain()) {
-          validating_masterchain = true;
-        }
         auto val_group_id = get_validator_set_id(shard, val_set, opts_hash, key_seqno, opts);
 
         if (force_recover) {
@@ -3629,7 +3625,7 @@ void ValidatorManagerImpl::init_validator_telemetry() {
     }
   }
   for (auto it = validator_telemetry_.begin(); it != validator_telemetry_.end();) {
-    if (processed.contains(it->first)) {
+    if (processed.count(it->first)) {
       ++it;
     } else {
       it = validator_telemetry_.erase(it);
