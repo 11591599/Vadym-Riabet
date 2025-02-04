@@ -69,8 +69,8 @@ class CellSlice : public td::CntObject {
   bool load(NoVmOrd, Ref<Cell> cell_ref);
   bool load(NoVmSpec, Ref<Cell> cell_ref);
   bool load(Ref<DataCell> dc_ref);
-  bool load(Ref<Cell> cell);
-  bool load_ord(Ref<Cell> cell);
+  bool load(const Ref<Cell> &cell);
+  bool load_ord(const Ref<Cell> &cell);
   unsigned size() const {
     return bits_en - bits_st;
   }

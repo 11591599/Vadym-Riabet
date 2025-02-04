@@ -262,8 +262,8 @@ LabelParser::LabelParser(Ref<CellSlice> cs, int max_label_len, int auto_validate
   }
 }
 
-LabelParser::LabelParser(Ref<Cell> cell, int max_label_len, int auto_validate) : remainder(), l_offs(0), l_same(0) {
-  Ref<CellSlice> cs = load_cell_slice_ref(std::move(cell));
+LabelParser::LabelParser(const Ref<Cell> &cell, int max_label_len, int auto_validate) : remainder(), l_offs(0), l_same(0) {
+  Ref<CellSlice> cs = load_cell_slice_ref(cell);
   if (!parse_label(cs.unique_write(), max_label_len)) {
     l_offs = 0;
   } else {
@@ -461,10 +461,12 @@ Ref<CellSlice> DictionaryFixed::lookup(td::ConstBitPtr key, int key_len) {
     return {};
   }
   //std::cerr << "dictionary lookup for key = " << key.to_hex(key_len) << std::endl;
-  Ref<Cell> cell = get_root_cell();
+  bool root = true;
+  Ref<Cell> cell;
   int n = key_len;
   while (true) {
-    LabelParser label{std::move(cell), n, label_mode()};
+    LabelParser label{root ? get_root_cell() : cell, n, label_mode()};
+	root = false;
     if (!label.is_prefix_of(key, n)) {
       //std::cerr << "(not a prefix)\n";
       return {};

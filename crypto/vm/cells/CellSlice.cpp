@@ -1055,7 +1055,9 @@ std::ostream& operator<<(std::ostream& os, Ref<CellSlice> cs_ref) {
 
 // If can_be_special is not null, then it is allowed to load special cell
 // Flag whether loaded cell is actually special will be stored into can_be_special
-VirtualCell::LoadedCell load_cell_slice_impl(Ref<Cell> cell, bool* can_be_special) {
+VirtualCell::LoadedCell load_cell_slice_impl(const Ref<Cell> &cell0, bool* can_be_special) {
+  const Cell* cell = cell0.get();
+  Ref<Cell> library_cell;
   auto* vm_state_interface = VmStateInterface::get();
   bool library_loaded = false;
   while (true) {
@@ -1086,9 +1088,9 @@ VirtualCell::LoadedCell load_cell_slice_impl(Ref<Cell> cell, bool* can_be_specia
           }
           CellSlice cs(std::move(loaded_cell));
           DCHECK(cs.size() == Cell::hash_bits + 8);
-          auto library_cell = vm_state_interface->load_library(cs.data_bits() + 8);
+          library_cell = vm_state_interface->load_library(cs.data_bits() + 8);
           if (library_cell.not_null()) {
-            cell = library_cell;
+            cell = library_cell.get();
             can_be_special = nullptr;
             continue;
           }
@@ -1106,19 +1108,19 @@ VirtualCell::LoadedCell load_cell_slice_impl(Ref<Cell> cell, bool* can_be_specia
 }
 
 CellSlice load_cell_slice(const Ref<Cell>& cell) {
-  return CellSlice{load_cell_slice_impl(cell, nullptr)};
+  return load_cell_slice_impl(cell, nullptr);
 }
 
 CellSlice load_cell_slice_special(const Ref<Cell>& cell, bool& special) {
-  return CellSlice{load_cell_slice_impl(cell, &special)};
+  return load_cell_slice_impl(cell, &special);
 }
 
 Ref<CellSlice> load_cell_slice_ref(const Ref<Cell>& cell) {
-  return Ref<CellSlice>{true, CellSlice(load_cell_slice_impl(cell, nullptr))};
+  return Ref<CellSlice>{true, load_cell_slice_impl(cell, nullptr)};
 }
 
 Ref<CellSlice> load_cell_slice_ref_special(const Ref<Cell>& cell, bool& special) {
-  return Ref<CellSlice>{true, CellSlice(load_cell_slice_impl(cell, &special))};
+  return Ref<CellSlice>{true, load_cell_slice_impl(cell, &special)};
 }
 
 void print_load_cell(std::ostream& os, Ref<Cell> cell, int indent) {
@@ -1126,12 +1128,12 @@ void print_load_cell(std::ostream& os, Ref<Cell> cell, int indent) {
   cs.print_rec(os, indent);
 }
 
-bool CellSlice::load(Ref<Cell> cell) {
-  return load(load_cell_slice_impl(std::move(cell), nullptr));
+bool CellSlice::load(const Ref<Cell> &cell) {
+  return load(load_cell_slice_impl(cell, nullptr));
 }
 
-bool CellSlice::load_ord(Ref<Cell> cell) {
-  return load(load_cell_slice_impl(std::move(cell), nullptr));
+bool CellSlice::load_ord(const Ref<Cell> &cell) {
+  return load(load_cell_slice_impl(cell, nullptr));
 }
 
 // END (SLICE LOAD FUNCTIONS)

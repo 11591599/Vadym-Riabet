@@ -37,7 +37,7 @@ struct LabelParser {
   int l_bits;
   unsigned s_bits;
   LabelParser(Ref<CellSlice> cs, int max_label_len, int auto_validate = chk_all);
-  LabelParser(Ref<Cell> cell, int max_label_len, int auto_validate = chk_all);
+  LabelParser(const Ref<Cell> &cell, int max_label_len, int auto_validate = chk_all);
   int is_valid() const {
     return l_offs;
   }
@@ -131,7 +131,7 @@ class DictionaryBase {
   static Ref<Cell> construct_root_from(const CellSlice& root_node_cs);
   Ref<CellSlice> get_root() const;
   Ref<CellSlice> extract_root() &&;
-  Ref<Cell> get_root_cell() const {
+  const Ref<Cell>& get_root_cell() const {
     return root_cell;
   }
   Ref<Cell> extract_root_cell() && {
